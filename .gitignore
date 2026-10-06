@@ -1,0 +1,24 @@
+# personal health data, tokens, secrets - never commit
+data/
+.env
+*.db
+*.db-wal
+*.db-shm
+.garminconnect/
+
+# python / tooling
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# generated
+assets/*.ico
+.claude/settings.local.json
+
+# personal intake / notes
+intake.txt

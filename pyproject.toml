@@ -1,0 +1,28 @@
+[project]
+name = "healthwatcher"
+version = "0.1.0"
+description = "Local Garmin + Strava training dashboard and coaching data store"
+authors = [
+    { name = "Thijmen", email = "min.thijmen@hva.nl" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "apscheduler>=3.11.3",
+    "fastapi>=0.142.2",
+    "garminconnect>=0.3.17",
+    "httpx>=0.28.1",
+    "mcp>=1.28,<2",
+    "pillow>=12.3.0",
+    "python-dotenv>=1.2.4",
+    "pywebview>=6.2.1",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[project.scripts]
+hw = "healthwatcher.cli:main"
+healthwatcher = "healthwatcher.desktop:main"
+hw-mcp = "healthwatcher.mcp_server:main"
+
+[build-system]
+requires = ["uv_build>=0.12.23,<0.13.0"]
+build-backend = "uv_build"

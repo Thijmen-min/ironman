@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "healthwatcher": {
+      "command": "uv",
+      "args": ["run", "hw-mcp"]
+    },
+    "garmin": {
+      "command": "uvx",
+      "args": ["--python", "3.12", "--from", "git+https://github.com/Taxuspt/garmin_mcp", "garmin-mcp"],
+      "env": {
+        "GARMINTOKENS": "~/.garminconnect"
+      }
+    }
+  }
+}

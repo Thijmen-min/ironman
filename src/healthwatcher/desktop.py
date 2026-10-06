@@ -19,7 +19,27 @@ def _server_up() -> bool:
         return False
 
 
+def _no_console_windows() -> None:
+    """The app runs under pythonw (no console). On Windows every console program it starts (the
+    claude CLI behind the coach chat, MCP servers, uvx) would then pop up its own terminal window.
+    Start them all with CREATE_NO_WINDOW instead; their children inherit the hidden console."""
+    import subprocess
+    import sys
+
+    if sys.platform != "win32" or getattr(subprocess.Popen.__init__, "_hw_patched", False):
+        return
+    original = subprocess.Popen.__init__
+
+    def init(self, *args, **kwargs):
+        kwargs["creationflags"] = kwargs.get("creationflags", 0) | subprocess.CREATE_NO_WINDOW
+        original(self, *args, **kwargs)
+
+    init._hw_patched = True
+    subprocess.Popen.__init__ = init
+
+
 def main() -> None:
+    _no_console_windows()
     logging.basicConfig(
         filename=DATA_DIR / "app.log", level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",

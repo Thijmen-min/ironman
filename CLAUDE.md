@@ -52,6 +52,7 @@ Put training plans on the app calendar with `add_planned_workouts` (descriptions
 ## Dev notes
 
 - Run: `uv run healthwatcher` (desktop window) · `uv run hw serve` (browser at http://localhost:8765) · desktop shortcut via `uv run hw shortcut`
+- Coaching method: `coach/METHOD.md` (planning horizons, blocks, tests, adaptation rules, sources). Follow it when planning.
 - Code: `src/healthwatcher/` - `garmin_sync.py` (fetch + extract), `strava.py`, `analytics.py` (TSS/PMC/assessment/briefing), `server.py` (FastAPI), `mcp_server.py`, `desktop.py` (pywebview), `static/` (UI)
 - Garmin JSON field paths are parsed defensively in `extract_daily`. After changing extraction, run `uv run hw reextract` (no refetch needed; raw payloads are stored).
 - `data/` holds personal data and is never committed.

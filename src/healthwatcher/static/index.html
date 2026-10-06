@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>HealthWatcher</title>
 <link rel="stylesheet" href="/static/app.css">
+<script>
+  // apply the saved color theme before first paint (no flash)
+  try { const t = localStorage.getItem("hw.theme"); if (t && t !== "system") document.documentElement.setAttribute("data-theme", t); } catch (e) {}
+</script>
 </head>
 <body>
 <header class="topbar">

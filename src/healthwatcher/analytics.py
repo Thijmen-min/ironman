@@ -143,9 +143,9 @@ def pmc(start: str, end: str, metric: str = "tss") -> list[dict[str, Any]]:
         by_day[a["day"]] = by_day.get(a["day"], 0) + v
     planned = {}
     if e > today:
-        for p in db.rows("SELECT day, sport, duration_s FROM planned WHERE day > ? AND day <= ?", (today.isoformat(), end)):
+        for p in db.rows("SELECT day, sport, duration_s, planned_tss FROM planned WHERE day > ? AND day <= ?", (today.isoformat(), end)):
             hours = (p["duration_s"] or 3600) / 3600
-            planned[p["day"]] = planned.get(p["day"], 0) + hours * _DEFAULT_TSS_PER_H[sport_group(p["sport"])]
+            planned[p["day"]] = planned.get(p["day"], 0) + (p["planned_tss"] or hours * _DEFAULT_TSS_PER_H[sport_group(p["sport"])])
     ctl = atl = 0.0
     out = []
     for d in _days(warm, e):
@@ -332,7 +332,16 @@ def weekly(start: str, end: str) -> list[dict[str, Any]]:
             tgt["count"] += 1
         for i in range(5):
             w["zones_s"][i] += a.get(f"hr_z{i + 1}_s") or 0
+    plans = {r["week"]: r for r in db.rows("SELECT * FROM plan_weeks WHERE week BETWEEN ? AND ?", (s.isoformat(), e.isoformat()))}
+    for p in db.rows("SELECT day, sport, duration_s, planned_tss FROM planned WHERE day BETWEEN ? AND ?",
+                     (s.isoformat(), (week_start(e) + timedelta(days=6)).isoformat())):
+        w = weeks.get(week_start(date.fromisoformat(p["day"])).isoformat())
+        if w is not None:
+            hours = (p["duration_s"] or 0) / 3600
+            w["planned_sessions_s"] = w.get("planned_sessions_s", 0) + (p["duration_s"] or 0)
+            w["planned_sessions_tss"] = round(w.get("planned_sessions_tss", 0) + (p["planned_tss"] or hours * _DEFAULT_TSS_PER_H[sport_group(p["sport"])]))
     for wk, w in weeks.items():
+        w["plan"] = plans.get(wk)
         days = [daily.get((date.fromisoformat(wk) + timedelta(days=i)).isoformat()) or {} for i in range(7)]
         w["sleep_h_avg"] = _round(_mean((x.get("sleep_s") or 0) / 3600 or None for x in days), 1)
         w["hrv_avg"] = _round(_mean(x.get("hrv_last_night") for x in days))

@@ -52,6 +52,31 @@ AUTO_ALLOW = ["mcp__healthwatcher", "Read", "Glob", "Grep", "WebSearch", "WebFet
 GARMIN_READ_PREFIXES = ("get_", "list_", "count_", "download_", "search_")
 FILE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 
+# Models offered in the chat panel. Runs on the Claude Code login, so these count against the
+# subscription's usage limits (bigger models / higher effort use them up faster).
+MODELS = {
+    "claude-opus-5-5": "Opus 5.5",
+    "claude-fable-5-1": "Fable 5.1",
+    "claude-sonnet-5-5": "Sonnet 5.5",
+    "claude-haiku-4-5": "Haiku 4.5",
+}
+EFFORTS = ["low", "medium", "high", "xhigh", "max"]
+DEFAULTS = {"model": "claude-opus-5-5", "effort": "high"}
+
+
+def defaults() -> dict[str, str]:
+    return {**DEFAULTS, **(db.kv_get("chat.defaults") or {})}
+
+
+def set_defaults(model: str | None, effort: str | None) -> dict[str, str]:
+    d = defaults()
+    if model in MODELS:
+        d["model"] = model
+    if effort in EFFORTS:
+        d["effort"] = effort
+    db.kv_set("chat.defaults", d)
+    return d
+
 COACH_PROMPT = """
 You are running inside the HealthWatcher desktop app as the athlete's personal coach and trainer
 (see CLAUDE.md). The athlete chats with you in a side panel next to their TrainingPeaks-style dashboard.
@@ -67,9 +92,19 @@ You are running inside the HealthWatcher desktop app as the athlete's personal c
   started - call get_profile if it may have changed). Keep it current: when the athlete tells you
   something durable (a new goal or race date, an injury update, a physio clearance, new FTP, changed
   availability), save it with update_profile and say you did.
-- To put a plan on the app's calendar use add_planned_workouts (local, no approval needed). Pushing
-  workouts to Garmin Connect / the watch uses the garmin tools: propose first - the app also asks the
-  athlete to approve each such call.
+- You own the training plan in the app (no approval needed - it's local). Before building or revising
+  a plan, Read coach/METHOD.md (the coaching method) and follow it. In short:
+  * season = OUTLINE only (set_plan_weeks: phase, week_type, block, hours, TSS, one-line focus) through
+    race week; key sessions only for the current/next block.
+  * blocks of 3-4 weeks (3:1 / 2:1), tests (FTP, CSS; run only when medically cleared) in the
+    recovery week every 6-8 weeks -> update thresholds with update_profile.
+  * detail = add_planned_workouts for the next 1-2 weeks (never beyond 4), based on recent data and
+    trends (load, compliance, HRV/RHR/sleep, check-ins), re-planned at each weekly review.
+  * targeted changes: get_plan, then update_planned_workouts / delete_planned_workouts. Briefly
+    confirm what changed.
+  Respect availability (swim days, schedule), hours, and every health limitation in the profile.
+- Pushing workouts to Garmin Connect / the watch uses the garmin tools: propose first - the app also
+  asks the athlete to approve each such call.
 
 {profile}
 """
@@ -142,9 +177,11 @@ def _result_text(content: Any) -> str:
 
 
 class Conversation:
-    def __init__(self, cid: str, sdk_session_id: str | None):
+    def __init__(self, cid: str, sdk_session_id: str | None, model: str | None = None, effort: str | None = None):
         self.id = cid
         self.sdk_session_id = sdk_session_id
+        self.model = model or defaults()["model"]
+        self.effort = effort or defaults()["effort"]
         self.client: ClaudeSDKClient | None = None
         self.queue: asyncio.Queue | None = None
         self.pending: dict[str, asyncio.Future] = {}
@@ -164,7 +201,20 @@ class Conversation:
             can_use_tool=self._can_use_tool,
             include_partial_messages=True,
             resume=self.sdk_session_id,
+            model=self.model,
+            effort=self.effort,
         )
+
+    async def set_model(self, model: str, effort: str) -> None:
+        """Switch model/effort; takes effect on the next message (the session is resumed)."""
+        if model in MODELS:
+            self.model = model
+        if effort in EFFORTS:
+            self.effort = effort
+        with db.session() as c:
+            c.execute("UPDATE chat_conversations SET model=?, effort=? WHERE id=?", (self.model, self.effort, self.id))
+        if not self.busy:
+            await self.close()
 
     async def _can_use_tool(self, name: str, tool_input: dict[str, Any], ctx: ToolPermissionContext):
         if _auto_allowed(name, tool_input):
@@ -268,28 +318,35 @@ def _save(cid: str, role: str, content: str, context: str | None = None) -> None
         c.execute("UPDATE chat_conversations SET updated_at=? WHERE id=?", (db.now_iso(), cid))
 
 
-def get_conversation(cid: str | None, first_message: str) -> Conversation:
+def get_conversation(cid: str | None, first_message: str, model: str | None = None,
+                     effort: str | None = None) -> Conversation:
     if cid and cid in _conversations:
         return _conversations[cid]
     if cid:
         row = db.rows("SELECT * FROM chat_conversations WHERE id=?", (cid,))
         if row:
-            conv = Conversation(cid, row[0]["sdk_session_id"])
+            conv = Conversation(cid, row[0]["sdk_session_id"], row[0].get("model"), row[0].get("effort"))
             _conversations[cid] = conv
             return conv
     cid = uuid.uuid4().hex[:16]
     title = first_message.strip().splitlines()[0][:80] if first_message.strip() else "New chat"
+    d = defaults()
+    model = model if model in MODELS else d["model"]
+    effort = effort if effort in EFFORTS else d["effort"]
     with db.session() as c:
-        c.execute("INSERT INTO chat_conversations(id, title, created_at, updated_at) VALUES (?,?,?,?)",
-                  (cid, title, db.now_iso(), db.now_iso()))
-    conv = Conversation(cid, None)
+        c.execute("INSERT INTO chat_conversations(id, title, created_at, updated_at, model, effort) VALUES (?,?,?,?,?,?)",
+                  (cid, title, db.now_iso(), db.now_iso(), model, effort))
+    conv = Conversation(cid, None, model, effort)
     _conversations[cid] = conv
     return conv
 
 
-async def send(cid: str | None, message: str, context: str | None):
+async def send(cid: str | None, message: str, context: str | None,
+               model: str | None = None, effort: str | None = None):
     """Start a turn; yields event dicts (first one names the conversation)."""
-    conv = get_conversation(cid, message)
+    conv = get_conversation(cid, message, model, effort)
+    if (model in MODELS and model != conv.model) or (effort in EFFORTS and effort != conv.effort):
+        await conv.set_model(model or conv.model, effort or conv.effort)
     if conv.busy:
         yield {"type": "error", "message": "Claude is still answering the previous message."}
         return
@@ -297,7 +354,7 @@ async def send(cid: str | None, message: str, context: str | None):
     conv.queue = asyncio.Queue()
     _save(conv.id, "user", message, context)
     prompt = f"[Context: {context}]\n{message}" if context else message
-    yield {"type": "conversation", "id": conv.id}
+    yield {"type": "conversation", "id": conv.id, "model": conv.model, "effort": conv.effort}
     task = asyncio.create_task(conv.run_turn(prompt))
     while True:
         ev = await conv.queue.get()
@@ -344,4 +401,4 @@ def history(cid: str) -> list[dict[str, Any]]:
 
 
 def conversations() -> list[dict[str, Any]]:
-    return db.rows("SELECT id, title, updated_at FROM chat_conversations ORDER BY updated_at DESC LIMIT 50")
+    return db.rows("SELECT id, title, updated_at, model, effort FROM chat_conversations ORDER BY updated_at DESC LIMIT 50")

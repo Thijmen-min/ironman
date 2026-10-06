@@ -7,6 +7,8 @@
     set(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (e) { /* storage off */ } },
   };
 
+  const AVATAR = "/static/img/coach-avatar.png";
+  const avatar = (cls) => h("img", { class: "coach-avatar " + (cls || ""), src: AVATAR, alt: "", "aria-hidden": "true" });
   let convId = store.get("hw.chat.conv");
   let busy = false;
   let context = null; // {label, context}
@@ -22,8 +24,14 @@
   const newBtn = h("button", { class: "btn", type: "button", title: "Start a new conversation" }, "New");
   const delBtn = h("button", { class: "btn-ghost chat-del", type: "button", title: "Delete this conversation" }, "🗑");
   const closeBtn = h("button", { class: "btn-ghost", type: "button", "aria-label": "Close chat" }, "×");
+  const modelSel = h("select", { class: "chat-select", "aria-label": "Model", title: "Model used by the coach" });
+  const effortSel = h("select", { class: "chat-select", "aria-label": "Effort", title: "Thinking effort - higher is more thorough but slower and uses more of your plan's limits" });
+  const modelNote = h("span", { class: "muted chat-model-note" });
+  const resizer = h("div", { class: "chat-resize", role: "separator", "aria-orientation": "vertical", "aria-label": "Resize chat", tabindex: 0, title: "Drag to resize" });
   const panel = h("aside", { class: "chat", id: "chat", hidden: true, "aria-label": "Coach chat" },
-    h("div", { class: "chat-head" }, h("div", { class: "chat-title" }, chatIcon(), "Coach"), convSelect, newBtn, delBtn, closeBtn),
+    resizer,
+    h("div", { class: "chat-head" }, h("div", { class: "chat-title" }, avatar("sm"), "Coach"), convSelect, newBtn, delBtn, closeBtn),
+    h("div", { class: "chat-sub" }, h("label", null, "Model", modelSel), h("label", null, "Effort", effortSel), modelNote),
     list,
     h("div", { class: "chat-foot" }, ctxChip, h("div", { class: "chat-input" }, input, sendBtn)));
   document.body.appendChild(panel);
@@ -32,6 +40,58 @@
   $(".topbar-right").insertBefore(topBtn, $("#syncBtn"));
   topBtn.onclick = () => (panel.hidden ? open({}) : close());
   closeBtn.onclick = close;
+
+  /* ---------------------------------------------------------------- width (drag to resize) */
+  const MIN_W = 340;
+  const maxW = () => Math.max(MIN_W, Math.min(1100, window.innerWidth - 420));
+  function setWidth(w, persist) {
+    w = Math.round(Math.max(MIN_W, Math.min(maxW(), w)));
+    document.documentElement.style.setProperty("--chat-w", w + "px");
+    if (persist) store.set("hw.chat.width", String(w));
+  }
+  setWidth(Number(store.get("hw.chat.width")) || 480, false);
+  resizer.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    resizer.setPointerCapture(e.pointerId);
+    document.body.classList.add("chat-resizing");
+    const move = (ev) => setWidth(window.innerWidth - ev.clientX, false);
+    const up = (ev) => {
+      resizer.releasePointerCapture(ev.pointerId);
+      resizer.removeEventListener("pointermove", move);
+      resizer.removeEventListener("pointerup", up);
+      document.body.classList.remove("chat-resizing");
+      setWidth(window.innerWidth - ev.clientX, true);
+      window.dispatchEvent(new Event("resize"));
+    };
+    resizer.addEventListener("pointermove", move);
+    resizer.addEventListener("pointerup", up);
+  });
+  resizer.addEventListener("keydown", (e) => {
+    const cur = parseInt(getComputedStyle(document.documentElement).getPropertyValue("--chat-w"), 10) || 480;
+    if (e.key === "ArrowLeft") { setWidth(cur + 30, true); e.preventDefault(); }
+    if (e.key === "ArrowRight") { setWidth(cur - 30, true); e.preventDefault(); }
+  });
+  window.addEventListener("resize", () => {
+    const cur = parseInt(getComputedStyle(document.documentElement).getPropertyValue("--chat-w"), 10);
+    if (cur > maxW()) setWidth(maxW(), false);
+  });
+
+  /* ---------------------------------------------------------------- model / effort */
+  let MODELS = {}, EFFORTS = [], DEFAULTS = { model: "claude-opus-5-5", effort: "high" };
+  let convMeta = {}; // conversation id -> {model, effort}
+  function showModel(m, e) {
+    if (m && MODELS[m]) modelSel.value = m;
+    if (e) effortSel.value = e;
+    modelNote.textContent = convId ? "" : "for new chats";
+  }
+  async function changeModel() {
+    const d = await post("/api/chat/settings", { model: modelSel.value, effort: effortSel.value, conversation_id: convId });
+    DEFAULTS = d;
+    if (convId) convMeta[convId] = { model: d.model, effort: d.effort };
+    toast(`Coach: ${MODELS[d.model]} · ${d.effort} effort${convId ? " (from your next message)" : ""}`);
+  }
+  modelSel.onchange = changeModel;
+  effortSel.onchange = changeModel;
 
   /* ---------------------------------------------------------------- open / close */
   function open(opts) {
@@ -64,6 +124,7 @@
   /* ---------------------------------------------------------------- conversations */
   async function refreshList() {
     const convs = await api("/api/chat/conversations");
+    convs.forEach((c) => { if (c.model) convMeta[c.id] = { model: c.model, effort: c.effort }; });
     convSelect.replaceChildren(h("option", { value: "" }, "New conversation"),
       ...convs.map((c) => h("option", { value: c.id }, (c.title || "Chat").slice(0, 48))));
     convSelect.value = convId && convs.some((c) => c.id === convId) ? convId : "";
@@ -90,6 +151,8 @@
       if (!msgs.length) emptyState();
     } else emptyState();
     await refreshList();
+    const meta = (convId && convMeta[convId]) || DEFAULTS;
+    showModel(meta.model, meta.effort);
     scroll(true);
   }
 
@@ -102,13 +165,14 @@
       ["How is my swim / bike / run balance for Knokke?", null],
     ];
     list.append(h("div", { class: "chat-empty" },
-      h("div", { class: "chat-empty-title" }, "Your coach has your Garmin & Strava data"),
-      h("div", { class: "muted" }, "Ask anything, or use “Discuss with Claude” on a day, workout or week."),
+      h("div", { class: "chat-empty-title" }, "Hi! I'm your coach"),
+      h("div", { class: "muted" }, "I can see your Garmin & Strava data, your profile and your plan. Ask anything, or use “Discuss with Claude” on a day, workout or week."),
       h("div", { class: "chat-ideas" }, ideas.map(([q]) => {
         const b = h("button", { class: "chat-idea", type: "button" }, q);
         b.onclick = () => { input.value = q; send(); };
         return b;
-      }))));
+      })),
+      h("img", { class: "chat-hero", src: "/static/img/coach-hero.png", alt: "Your coach, pointing at the suggestions" })));
   }
 
   function renderStored(m) {
@@ -141,7 +205,7 @@
   }
   function addAssistant(md) {
     clearEmpty();
-    const b = h("div", { class: "msg assistant" }, h("div", { class: "bubble" }, mdToNodes(md)));
+    const b = h("div", { class: "msg assistant" }, h("div", { class: "msg-row" }, avatar(), h("div", { class: "bubble" }, mdToNodes(md))));
     list.append(b);
     scroll();
     return b;
@@ -198,14 +262,14 @@
     addUser(text, ctx ? ctx.label : null);
     setContext(null);
     setBusy(true);
-    const thinking = h("div", { class: "msg note typing" }, h("span", { class: "dots" }, h("i"), h("i"), h("i")), "Coach is thinking…");
+    const thinking = h("div", { class: "msg note typing" }, avatar(), h("span", { class: "dots" }, h("i"), h("i"), h("i")), "Coach is thinking…");
     list.append(thinking);
     scroll(true);
     streamBubble = null; streamText = "";
     try {
       const r = await fetch("/api/chat/send", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversation_id: convId, message: text, context: ctx ? ctx.context : null }),
+        body: JSON.stringify({ conversation_id: convId, message: text, context: ctx ? ctx.context : null, model: modelSel.value, effort: effortSel.value }),
       });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
       const reader = r.body.getReader();
@@ -246,14 +310,16 @@
     switch (ev.type) {
       case "conversation":
         convId = ev.id; store.set("hw.chat.conv", convId);
+        if (ev.model) convMeta[convId] = { model: ev.model, effort: ev.effort };
+        modelNote.textContent = "";
         break;
       case "delta":
         if (!streamBubble) {
-          streamBubble = h("div", { class: "msg assistant streaming" }, h("div", { class: "bubble" }));
+          streamBubble = h("div", { class: "msg assistant streaming" }, h("div", { class: "msg-row" }, avatar(), h("div", { class: "bubble" })));
           list.append(streamBubble);
         }
         streamText += ev.text;
-        streamBubble.firstChild.textContent = streamText;
+        streamBubble.querySelector(".bubble").textContent = streamText;
         scroll();
         break;
       case "text":
@@ -294,6 +360,11 @@
   if (qp || store.get("hw.chat.open") === "1") open({});
   api("/api/chat/status").then((s) => {
     if (!s.cli) { topBtn.title = "Claude Code CLI not found - install it to use the coach chat"; }
+    MODELS = s.models; EFFORTS = s.efforts; DEFAULTS = s.defaults;
+    modelSel.replaceChildren(...Object.entries(MODELS).map(([id, name]) => h("option", { value: id }, name)));
+    effortSel.replaceChildren(...EFFORTS.map((e) => h("option", { value: e }, e)));
+    const meta = (convId && convMeta[convId]) || DEFAULTS;
+    showModel(meta.model, meta.effort);
   }).catch(() => {});
 
   HW.chat = { open, close };

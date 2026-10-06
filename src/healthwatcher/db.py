@@ -73,6 +73,19 @@ CREATE TABLE IF NOT EXISTS planned (
     raw TEXT
 );
 
+-- Season plan, one row per training week (Monday), written by the coach.
+CREATE TABLE IF NOT EXISTS plan_weeks (
+    week TEXT PRIMARY KEY,      -- Monday YYYY-MM-DD
+    phase TEXT,                 -- Base / Build / Peak / Taper / Recovery / Race ...
+    focus TEXT,                 -- one line: what this week is about
+    hours REAL,                 -- planned training hours
+    tss REAL,                   -- planned weekly TSS
+    swim_h REAL, bike_h REAL, run_h REAL, strength_h REAL,
+    key_sessions TEXT,          -- short list of the week's key sessions
+    notes TEXT,
+    updated_at TEXT
+);
+
 -- Subjective daily check-in (the stuff no watch can measure).
 CREATE TABLE IF NOT EXISTS checkins (
     day TEXT PRIMARY KEY,
@@ -169,6 +182,12 @@ def session(readonly: bool = False) -> Iterator[sqlite3.Connection]:
 # Columns added after the first release: (table, column, type).
 MIGRATIONS = [
     ("planned", "description", "TEXT"),   # workout description / coach notes
+    ("planned", "planned_tss", "REAL"),   # coach's TSS estimate for the session
+    ("planned", "kind", "TEXT"),          # session | test | race
+    ("plan_weeks", "week_type", "TEXT"),  # load | recovery | test | taper | race | transition
+    ("plan_weeks", "block", "TEXT"),
+    ("chat_conversations", "model", "TEXT"),
+    ("chat_conversations", "effort", "TEXT"),
 ]
 
 

@@ -48,7 +48,7 @@
   const h = (tag, attrs, ...kids) => {
     const n = document.createElement(tag);
     for (const k in attrs || {}) {
-      if (k === "class") n.className = attrs[k];
+      if (k === "class") { if (attrs[k]) n.className = attrs[k]; }
       else if (k === "html") n.innerHTML = attrs[k];
       else if (k.startsWith("on")) n.addEventListener(k.slice(2), attrs[k]);
       else if (k === "style" && typeof attrs[k] === "object") {
@@ -95,7 +95,7 @@
     const c = h("div", { class: "card " + (opts.cls || "") }, head, b);
     if (opts.table) {
       // chart <-> table toggle (every chart has a table twin)
-      const chartBtn = h("button", { class: "on" }, "Chart"), tblBtn = h("button", null, "Table");
+      const chartBtn = h("button", { class: "on", title: "Show the chart" }, "Chart"), tblBtn = h("button", { title: "Show the numbers behind this chart" }, "Data");
       let tblNode = null;
       chartBtn.onclick = () => { chartBtn.classList.add("on"); tblBtn.classList.remove("on"); body.hidden = false; if (tblNode) tblNode.hidden = true; };
       tblBtn.onclick = () => {
@@ -314,13 +314,15 @@
     const done = x.completed;
     const isPast = x.day < todayIso();
     const isCoach = x.item_type === "coach";
-    const badge = planned ? (done ? h("span", { class: "badge done" }, "Done") : isPast ? h("span", { class: "badge missed" }, "Missed") : h("span", { class: "badge" + (isCoach ? " coach" : "") }, isCoach ? "Coach" : "Planned")) : null;
+    const isTest = x.kind === "test";
+    const badge = planned ? (done ? h("span", { class: "badge done" }, "Done") : isPast ? h("span", { class: "badge missed" }, "Missed") : h("span", { class: "badge" + (isTest ? " test" : isCoach ? " coach" : "") }, isTest ? "Test" : isCoach ? "Coach" : "Planned")) : null;
     const b = h("button", { class: "wk" + (planned ? " planned" : ""), style: { "--sport": SPORT_COLOR[g] }, title: `${x.name || ""} (${x.sport || g})` },
-      h("div", { class: "t" }, sportIcon(g), h("span", null, x.name || x.sport || g), badge),
-      h("div", { class: "d" },
+      h("div", { class: "t" }, sportIcon(g), h("span", null, x.name || x.sport || g)),
+      h("div", { class: "d" }, badge,
         x.duration_s ? h("span", null, h("b", null, dur(x.duration_s))) : null,
         x.distance_m ? h("span", null, km(x.distance_m) + " km") : null,
         !planned && x.tss != null ? h("span", null, h("b", null, Math.round(x.tss)), " TSS") : null,
+        planned && x.planned_tss ? h("span", null, "~", h("b", null, Math.round(x.planned_tss)), " TSS") : null,
         !planned && x.avg_hr ? h("span", null, Math.round(x.avg_hr) + " bpm") : null));
     if (!planned) b.onclick = () => openActivity(x);
     else b.onclick = () => {
@@ -354,7 +356,22 @@
     next.onclick = () => { calAnchor = addDays(calAnchor, 28); render(); };
     tdy.onclick = () => { calAnchor = monday(new Date()); render(); };
     const sMid = parse(data.days[Math.floor(data.days.length / 2)].day);
-    const toolbar = h("div", { class: "toolbar" }, h("h2", null, `${MON[sMid.getMonth()]} ${sMid.getFullYear()}`), prev, tdy, next,
+    const seasonBtn = h("button", { class: "btn", type: "button", title: "Build or rebuild the season outline to your A-race" }, chatIcon(), "Season outline");
+    seasonBtn.onclick = () => HW.chat.open({
+      label: "Season outline", context: "the Calendar / training plan (season outline)",
+      prompt: "Build my season outline. Read coach/METHOD.md first.\n" +
+        "1. Analyse my recent training (last 8-12 weeks: volume per sport, CTL trend, intensity distribution, compliance) and recovery trends (HRV, resting HR, sleep, check-ins).\n" +
+        "2. With set_plan_weeks, outline every week from now to race week of my A-race: phase, week_type, block, hours, TSS, one-line focus. Use 3:1 or 2:1 blocks and put FTP/CSS tests in the recovery week every 6-8 weeks.\n" +
+        "3. Only detail the next 2 weeks with add_planned_workouts (remove existing coach workouts in that range first).\n" +
+        "Respect my profile (availability, swim days, knee). Then explain the outline in a few lines.",
+    });
+    const reviewBtn = h("button", { class: "btn primary", type: "button", title: "Review last week and plan the next one" }, chatIcon(), "Weekly review");
+    reviewBtn.onclick = () => HW.chat.open({
+      label: "Weekly review", context: "weekly review of the training plan",
+      prompt: "Do my weekly review (coach/METHOD.md section 5): compare planned vs done for last week, look at my recovery trend and check-ins, " +
+        "decide whether to progress, repeat or pull recovery forward, then detail the next 1-2 weeks (adjust the outline only if needed). Keep the summary short.",
+    });
+    const toolbar = h("div", { class: "toolbar" }, h("h2", null, `${MON[sMid.getMonth()]} ${sMid.getFullYear()}`), prev, tdy, next, reviewBtn, seasonBtn,
       h("span", { class: "spacer", style: { flex: 1 } }),
       legend(SPORTS.map((s) => ({ name: s, color: SPORT_COLOR[s] }))));
 
@@ -394,9 +411,22 @@
       const wk = weeks[days[0].day] || {};
       const wkBtn = h("button", { class: "addci wkchat", title: "Discuss this week with Claude" }, chatIcon(), "Discuss week");
       wkBtn.onclick = () => HW.chat.open({ label: `Week of ${fmtDay(days[0].day)}`, context: `training week ${days[0].day} to ${days[6].day} (Mon-Sun)` });
-      const sum = h("div", { class: "cal-sum" }, wkBtn,
-        h("div", { class: "row" }, h("span", null, "Total TSS"), h("b", null, wk.tss ?? 0)),
-        h("div", { class: "row" }, h("span", null, "Duration"), h("b", null, dur(wk.duration_s))),
+      const plan = wk.plan;
+      const planHours = plan && plan.hours ? plan.hours * 3600 : wk.planned_sessions_s || 0;
+      const planTss = plan && plan.tss ? plan.tss : wk.planned_sessions_tss || 0;
+      const planBox = plan ? h("div", { class: "plan-box", title: plan.notes || "" },
+        h("div", { class: "phase" }, h("i", { style: { background: PHASE_COLOR[plan.phase] || "var(--surface-2)" } }), plan.phase || "Plan",
+          plan.week_type && plan.week_type !== "load" ? h("span", { class: "wtype" }, plan.week_type) : null),
+        plan.block ? h("div", { class: "key" }, plan.block) : null,
+        plan.focus ? h("div", { class: "focus" }, plan.focus) : null,
+        plan.key_sessions ? h("div", { class: "key" }, plan.key_sessions) : null) : null;
+      const meter = (done, target) => target ? h("div", { class: "plan-meter", title: `${Math.round((100 * done) / target)}% of plan` },
+        h("div", { style: { width: Math.min(100, (100 * done) / target) + "%" } })) : null;
+      const sum = h("div", { class: "cal-sum" }, wkBtn, planBox,
+        h("div", { class: "row" }, h("span", null, "TSS"), h("b", null, `${wk.tss ?? 0}${planTss ? " / " + Math.round(planTss) : ""}`)),
+        meter(wk.tss || 0, planTss),
+        h("div", { class: "row" }, h("span", null, "Duration"), h("b", null, `${dur(wk.duration_s)}${planHours ? " / " + dur(planHours) : ""}`)),
+        meter(wk.duration_s || 0, planHours),
         h("div", { class: "row" }, h("span", null, "Distance"), h("b", null, km(wk.distance_m) + " km")),
         h("hr"),
         h("div", { class: "row" }, h("span", null, "Fitness (CTL)"), h("b", null, r0(wk.ctl))),
@@ -745,10 +775,40 @@
         " (everything in this app: any day, any workout incl. laps, trends, load model, check-ins, SQL) and ", h("b", null, "garmin"),
         " (live Garmin Connect - it can build and schedule structured workouts on your watch after you approve)."),
       h("div", null, "Use ", h("b", null, "Discuss with Claude"), " on a day, workout, week or a point on the PMC chart to start from that context."),
-      h("div", null, openChat),
+      h("div", { class: "coach-cta" }, openChat, h("img", { class: "coach-cta-img", src: "/static/img/coach-hero.png", alt: "" })),
       h("div", { class: "muted" }, "The same tools work in the terminal: run claude in " + (STATUS?.project_root || "this folder") + ".")));
     view.replaceChildren(h("div", { class: "toolbar" }, h("h2", null, "Coach briefing"), copy),
       h("div", { class: "grid g3" }, h("div", { class: "card span2" }, h("div", { class: "card-body" }, mdToNodes(md))), h("div", { class: "stack" }, how)));
+  }
+
+  /* ================================================================ THEMES */
+  const THEMES = [
+    ["system", "System", ["#f4f5f7", "#0d0d0d", "#2a78d6", "#eb6834", "#1baf7a"]],
+    ["light", "Light", ["#f4f5f7", "#fcfcfb", "#2a78d6", "#eb6834", "#1baf7a"]],
+    ["dark", "Dark", ["#0d0d0d", "#1a1a19", "#3987e5", "#d95926", "#199e70"]],
+    ["gruvbox-dark", "Gruvbox Dark", ["#1d2021", "#282828", "#83a598", "#fe8019", "#fabd2f"]],
+    ["gruvbox-light", "Gruvbox Light", ["#f2e5bc", "#fbf1c7", "#076678", "#af3a03", "#b57614"]],
+    ["nord", "Nord", ["#272c36", "#2e3440", "#88c0d0", "#d08770", "#a3be8c"]],
+    ["catppuccin-mocha", "Catppuccin Mocha", ["#11111b", "#1e1e2e", "#cba6f7", "#fab387", "#a6e3a1"]],
+    ["catppuccin-latte", "Catppuccin Latte", ["#dce0e8", "#eff1f5", "#8839ef", "#fe640b", "#40a02b"]],
+  ];
+  const getTheme = () => { try { return localStorage.getItem("hw.theme") || "system"; } catch (e) { return "system"; } };
+  function setTheme(t) {
+    try { localStorage.setItem("hw.theme", t); } catch (e) { /* storage off */ }
+    if (t === "system") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", t);
+  }
+  function themeCard() {
+    const grid = h("div", { class: "theme-grid", role: "radiogroup", "aria-label": "Color theme" });
+    const draw = () => grid.replaceChildren(...THEMES.map(([id, name, sw]) => {
+      const on = getTheme() === id;
+      const b = h("button", { class: "theme-opt" + (on ? " on" : ""), type: "button", role: "radio", "aria-checked": on ? "true" : "false" },
+        h("div", { class: "theme-swatch" }, sw.map((c) => h("i", { style: { background: c } }))), name);
+      b.onclick = () => { setTheme(id); draw(); };
+      return b;
+    }));
+    draw();
+    return card("Appearance", "color theme (saved on this computer)", grid, { cls: "span-all" });
   }
 
   /* ================================================================ SETTINGS */
@@ -816,6 +876,7 @@
     const logBody = table(["Time", "Source", "Status", "Message"], s.log.map((l) => [l.ts.replace("T", " "), l.source, l.status, l.message]));
     view.replaceChildren(h("div", { class: "toolbar" }, h("h2", null, "Settings & connections")),
       h("div", { class: "grid g2" },
+        themeCard(),
         card("Garmin Connect", null, gBody), card("Strava", null, sBody),
         card("Training thresholds", "used for TSS - override in .env (HW_LTHR, HW_FTP)", thBody), card("Sync log", null, logBody)));
   }

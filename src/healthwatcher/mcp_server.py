@@ -19,6 +19,9 @@ mcp = FastMCP(
 )
 
 
+DETAIL_HORIZON_DAYS = 28
+
+
 def _r(days: int) -> tuple[str, str]:
     e = date.today()
     return (e - timedelta(days=days)).isoformat(), e.isoformat()
@@ -64,15 +67,21 @@ def update_profile(changes: dict[str, Any], reason: str) -> dict[str, Any]:
 def add_planned_workouts(workouts: list[dict[str, Any]]) -> dict[str, Any]:
     """Put workouts on the app's Calendar as coach-planned sessions (local to the app - NOT pushed to the
     watch; use the garmin tools for that, with approval). Each item: day (YYYY-MM-DD), name, sport
-    (running/cycling/swimming/strength_training/walking/...), duration_min, optional distance_km and
-    description (structure, targets, purpose). Returns the created ids."""
+    (running/cycling/swimming/strength_training/walking/...), duration_min, optional distance_km, tss
+    (your estimate), kind (session | test | race) and description (markdown: purpose, warm-up / main set /
+    cool-down with HR, power or pace targets from the athlete's thresholds, RPE, fuelling for long sessions).
+    Only days within the next 28 days are accepted - later weeks belong in set_plan_weeks (outline only)."""
     import json as _json
     import uuid as _uuid
 
-    ids = []
+    ids, rejected = [], []
+    horizon = (date.today() + timedelta(days=DETAIL_HORIZON_DAYS)).isoformat()
     with db.session() as c:
         for w in workouts:
             if not w.get("day") or not w.get("name"):
+                continue
+            if str(w["day"]) > horizon:
+                rejected.append(w["day"])
                 continue
             wid = f"coach:{_uuid.uuid4().hex[:10]}"
             db.upsert(c, "planned", "id", {
@@ -80,15 +89,102 @@ def add_planned_workouts(workouts: list[dict[str, Any]]) -> dict[str, Any]:
                 "duration_s": float(w["duration_min"]) * 60 if w.get("duration_min") else None,
                 "distance_m": float(w["distance_km"]) * 1000 if w.get("distance_km") else None,
                 "workout_id": None, "item_type": "coach", "description": w.get("description"),
+                "planned_tss": float(w["tss"]) if w.get("tss") else None,
+                "kind": w.get("kind") if w.get("kind") in ("session", "test", "race") else "session",
                 "raw": _json.dumps(w),
             })
             ids.append(wid)
-    return {"created": ids}
+    out: dict[str, Any] = {"created": ids}
+    if rejected:
+        out["rejected_beyond_horizon"] = sorted(set(rejected))
+        out["note"] = (f"Detailed sessions are limited to the next {DETAIL_HORIZON_DAYS} days (see coach/METHOD.md). "
+                       "Describe later weeks with set_plan_weeks instead.")
+    return out
 
 
 @mcp.tool()
-def delete_planned_workouts(ids: list[str]) -> dict[str, Any]:
-    """Remove coach-planned workouts from the app's Calendar (only ids starting with 'coach:')."""
+def update_planned_workouts(changes: list[dict[str, Any]]) -> dict[str, Any]:
+    """Edit coach-planned workouts on the app calendar. Each item: id (from get_plan / get_planned_workouts,
+    'coach:...') plus any fields to change: day (move it), name, sport, duration_min, distance_km, tss,
+    description."""
+    done = []
+    with db.session() as c:
+        for ch in changes:
+            wid = str(ch.get("id") or "")
+            if not wid.startswith("coach:"):
+                continue
+            sets = {}
+            for k in ("day", "name", "sport", "description", "kind"):
+                if k in ch:
+                    sets[k] = ch[k]
+            if "duration_min" in ch:
+                sets["duration_s"] = float(ch["duration_min"]) * 60 if ch["duration_min"] else None
+            if "distance_km" in ch:
+                sets["distance_m"] = float(ch["distance_km"]) * 1000 if ch["distance_km"] else None
+            if "tss" in ch:
+                sets["planned_tss"] = float(ch["tss"]) if ch["tss"] else None
+            if sets:
+                c.execute(f"UPDATE planned SET {', '.join(k + '=?' for k in sets)} WHERE id=?", [*sets.values(), wid])
+                done.append(wid)
+    return {"updated": done}
+
+
+@mcp.tool()
+def set_plan_weeks(weeks: list[dict[str, Any]]) -> dict[str, Any]:
+    """Write the season plan at week level (shown in the app calendar's week summary next to what was actually
+    done). Each item: week (the Monday, YYYY-MM-DD), phase (Base/Build/Peak/Taper/Recovery/Race/Transition),
+    week_type (load | recovery | test | taper | race | transition), block (e.g. "Base 1 - week 2/4"),
+    focus (one line), hours, tss, optional swim_h, bike_h, run_h, strength_h, key_sessions (short text - only
+    for the current/next block; leave empty for far-out weeks), notes. Existing weeks are overwritten.
+    Cover the whole season through race week as an OUTLINE (see coach/METHOD.md); detailed sessions go in
+    add_planned_workouts."""
+    from datetime import date as _date
+
+    saved = []
+    with db.session() as c:
+        for w in weeks:
+            try:
+                d = _date.fromisoformat(str(w.get("week")))
+            except ValueError:
+                continue
+            monday = (d - timedelta(days=d.weekday())).isoformat()
+            db.upsert(c, "plan_weeks", "week", {
+                "week": monday, "phase": w.get("phase"), "focus": w.get("focus"),
+                "week_type": w.get("week_type"), "block": w.get("block"),
+                "hours": w.get("hours"), "tss": w.get("tss"),
+                "swim_h": w.get("swim_h"), "bike_h": w.get("bike_h"), "run_h": w.get("run_h"),
+                "strength_h": w.get("strength_h"), "key_sessions": w.get("key_sessions"),
+                "notes": w.get("notes"), "updated_at": db.now_iso(),
+            })
+            saved.append(monday)
+    return {"saved_weeks": len(saved), "first": min(saved) if saved else None, "last": max(saved) if saved else None}
+
+
+@mcp.tool()
+def get_plan(start: str | None = None, end: str | None = None) -> dict[str, Any]:
+    """The training plan between two dates (default: this week + 3 weeks): week targets (plan_weeks) with what
+    was actually done per week, and every planned workout (coach + Garmin) with ids for update/delete."""
+    t = date.today()
+    s = start or (t - timedelta(days=t.weekday())).isoformat()
+    e = end or (date.fromisoformat(s) + timedelta(days=27)).isoformat()
+    weeks = analytics.weekly(s, e)
+    return {
+        "weeks": [{k: w.get(k) for k in ("week", "plan", "tss", "duration_s", "count", "planned_sessions_s",
+                                          "planned_sessions_tss", "ctl", "atl", "tsb")} for w in weeks],
+        "detail_horizon": (date.today() + timedelta(days=DETAIL_HORIZON_DAYS)).isoformat(),
+        "workouts": db.rows("SELECT id, day, name, sport, duration_s, distance_m, planned_tss, item_type, kind, description "
+                            "FROM planned WHERE day BETWEEN ? AND ? ORDER BY day", (s, e)),
+    }
+
+
+@mcp.tool()
+def delete_planned_workouts(ids: list[str] | None = None, start: str | None = None, end: str | None = None) -> dict[str, Any]:
+    """Remove coach-planned workouts from the app's Calendar: by ids ('coach:...'), or every coach workout
+    between start and end (YYYY-MM-DD, inclusive) - handy before re-planning a block. Garmin workouts are
+    never touched here."""
+    ids = list(ids or [])
+    if start and end:
+        ids += [r["id"] for r in db.rows("SELECT id FROM planned WHERE item_type='coach' AND day BETWEEN ? AND ?", (start, end))]
     ids = [i for i in ids if str(i).startswith("coach:")]
     with db.session() as c:
         for i in ids:

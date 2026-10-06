@@ -58,8 +58,13 @@ async def _shutdown() -> None:
 
 
 @app.get("/", response_class=HTMLResponse)
-def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-store"})
+def index() -> HTMLResponse:
+    # Version the static assets by their mtime so the desktop webview never runs stale JS/CSS after an update.
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    for f in STATIC_DIR.iterdir():
+        if f.suffix in (".js", ".css"):
+            html = html.replace(f"/static/{f.name}\"", f"/static/{f.name}?v={int(f.stat().st_mtime)}\"")
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
 # ---------------------------------------------------------------- status & auth
@@ -168,7 +173,7 @@ def _clean_activity(a: dict[str, Any]) -> dict[str, Any]:
 def calendar(start: str | None = None, end: str | None = None) -> dict[str, Any]:
     s, e = _range(start, end, 27)
     acts = analytics.load_activities(s, e)
-    planned = db.rows("SELECT id, day, name, sport, duration_s, distance_m, item_type, description FROM planned WHERE day BETWEEN ? AND ?", (s, e))
+    planned = db.rows("SELECT id, day, name, sport, duration_s, distance_m, item_type, description, planned_tss, kind FROM planned WHERE day BETWEEN ? AND ?", (s, e))
     daily = analytics.load_daily(s, e)
     checkins = {r["day"]: r for r in db.rows("SELECT * FROM checkins WHERE day BETWEEN ? AND ?", (s, e))}
     for p in planned:
@@ -272,7 +277,18 @@ def save_checkin(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
 
 @app.get("/api/chat/status")
 def chat_status() -> dict[str, Any]:
-    return {"cli": chat.claude_cli()}
+    return {"cli": chat.claude_cli(), "models": chat.MODELS, "efforts": chat.EFFORTS, "defaults": chat.defaults()}
+
+
+@app.post("/api/chat/settings")
+async def chat_settings(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Change the default model/effort, and the given conversation's (applies from its next message)."""
+    d = chat.set_defaults(payload.get("model"), payload.get("effort"))
+    cid = payload.get("conversation_id")
+    if cid:
+        conv = chat.get_conversation(cid, "")
+        await conv.set_model(d["model"], d["effort"])
+    return d
 
 
 @app.get("/api/chat/conversations")
@@ -298,7 +314,8 @@ async def chat_send(payload: dict[str, Any] = Body(...)) -> StreamingResponse:
         raise HTTPException(400, "Empty message")
 
     async def events():
-        async for ev in chat.send(payload.get("conversation_id"), message, payload.get("context")):
+        async for ev in chat.send(payload.get("conversation_id"), message, payload.get("context"),
+                                  payload.get("model"), payload.get("effort")):
             yield f"data: {json.dumps(ev, default=str)}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream",

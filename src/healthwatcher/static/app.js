@@ -234,7 +234,7 @@
   /* ================================================================ HOME */
   async function renderHome(view) {
     const t = todayIso();
-    const [today, dash, ci] = await Promise.all([api(`/api/today?day=${t}`), api(`/api/dashboard?start=${iso(addDays(new Date(), -42))}`), api(`/api/checkin?day=${t}`)]);
+    const [today, dash, ci, prof] = await Promise.all([api(`/api/today?day=${t}`), api(`/api/dashboard?start=${iso(addDays(new Date(), -42))}`), api(`/api/checkin?day=${t}`), api("/api/profile")]);
     const a = today.assessment, d = today.daily || {};
     const daily = dash.daily;
     const series = (k, f = (x) => x) => daily.slice(-14).map((r) => (r[k] == null ? null : f(r[k])));
@@ -242,6 +242,7 @@
 
     const lvl = { Rest: "critical", Recovery: "serious", "Easy / moderate": "warning", Train: "good", Go: "good" }[a.verdict];
     const verdict = card("Today", fmtDay(t), h("div", { class: "stack" },
+      seasonLine(prof.season),
       h("div", { class: "verdict" },
         h("div", { class: "hero" }, a.verdict),
         h("div", null,
@@ -312,7 +313,8 @@
     const g = x.group || "Other";
     const done = x.completed;
     const isPast = x.day < todayIso();
-    const badge = planned ? (done ? h("span", { class: "badge done" }, "Done") : isPast ? h("span", { class: "badge missed" }, "Missed") : h("span", { class: "badge" }, "Planned")) : null;
+    const isCoach = x.item_type === "coach";
+    const badge = planned ? (done ? h("span", { class: "badge done" }, "Done") : isPast ? h("span", { class: "badge missed" }, "Missed") : h("span", { class: "badge" + (isCoach ? " coach" : "") }, isCoach ? "Coach" : "Planned")) : null;
     const b = h("button", { class: "wk" + (planned ? " planned" : ""), style: { "--sport": SPORT_COLOR[g] }, title: `${x.name || ""} (${x.sport || g})` },
       h("div", { class: "t" }, sportIcon(g), h("span", null, x.name || x.sport || g), badge),
       h("div", { class: "d" },
@@ -321,7 +323,19 @@
         !planned && x.tss != null ? h("span", null, h("b", null, Math.round(x.tss)), " TSS") : null,
         !planned && x.avg_hr ? h("span", null, Math.round(x.avg_hr) + " bpm") : null));
     if (!planned) b.onclick = () => openActivity(x);
-    else b.onclick = () => openDrawer(h("h2", null, x.name || "Planned workout"), [h("div", { class: "muted" }, `${fmtDay(x.day)} · ${x.sport || ""} · ${dur(x.duration_s)}${x.distance_m ? " · " + km(x.distance_m) + " km" : ""}`), h("div", null, "Scheduled in Garmin Connect. Ask Claude to adjust or create workouts - they sync to your watch.")]);
+    else b.onclick = () => {
+      const nodes = [h("div", { class: "muted" }, `${fmtDay(x.day)} · ${x.sport || ""} · ${dur(x.duration_s)}${x.distance_m ? " · " + km(x.distance_m) + " km" : ""}`)];
+      if (x.description) nodes.push(mdToNodes(x.description));
+      const actions = h("div", { class: "row" }, discuss(`${x.name} · ${fmtDay(x.day)}`, `planned workout "${x.name}" (${x.sport}, id ${x.id}) on ${x.day}`));
+      if (isCoach) {
+        const rm = h("button", { class: "btn", type: "button" }, "Remove from calendar");
+        rm.onclick = async () => { await api(`/api/planned/${encodeURIComponent(x.id)}`, { method: "DELETE" }); closeDrawer(); toast("Workout removed"); render(true); };
+        actions.append(rm);
+        nodes.push(h("div", { class: "muted" }, "Planned by your coach in the app (not on your watch yet). Ask the coach to push it to Garmin if you want it on the watch."));
+      } else nodes.push(h("div", { class: "muted" }, "Scheduled in Garmin Connect - it syncs to your watch."));
+      nodes.unshift(actions);
+      openDrawer(h("h2", null, x.name || "Planned workout"), nodes);
+    };
     return b;
   }
 
@@ -524,6 +538,154 @@
     wellCards.forEach((c) => c._draw());
   }
 
+  /* ================================================================ PROFILE */
+  const PHASE_COLOR = { Preparation: "var(--surface-2)", Base: "var(--z1)", Build: "var(--z2)", Peak: "var(--z3)", Taper: "var(--z4)" };
+  const PHASE_INK = { Preparation: "var(--ink-2)", Base: "#0b0b0b", Build: "#ffffff", Peak: "#ffffff", Taper: "#ffffff" };
+  const shortDate = (s) => { const d = parse(s); return `${d.getDate()} ${MON[d.getMonth()]} ${String(d.getFullYear()).slice(2)}`; };
+  const weeksBetween = (a, b) => Math.round((parse(b) - parse(a)) / 6048e5 + 1 / 7);
+
+  function seasonLine(season) {
+    if (!season) return null;
+    const bits = [];
+    if (season.phase) bits.push(h("b", null, season.phase + (season.phase_week ? ` · week ${season.phase_week} of ${season.phase_weeks}` : "")));
+    if (season.phase === "Preparation") bits.push(` · training starts ${fmtDay(season.training_start)}`);
+    bits.push(` · ${season.weeks_to_race} weeks to ${season.race.name}`);
+    return h("div", { class: "season-line" }, ...bits);
+  }
+
+  function seasonStrip(season) {
+    const wrap = h("div", { class: "season" });
+    const first = season.phases[0].start, last = season.race.date;
+    const total = parse(last) - parse(first) || 1;
+    const bar = h("div", { class: "season-bar", role: "img", "aria-label": "Season phases" });
+    season.phases.forEach((ph) => {
+      const w = ((parse(ph.end) - parse(ph.start) + 864e5) / total) * 100;
+      const wk = weeksBetween(ph.start, ph.end);
+      bar.append(h("div", { class: "season-seg" + (ph.name === season.phase ? " current" : ""), title: `${ph.name}: ${fmtDay(ph.start)} - ${fmtDay(ph.end)} (${wk} wk)`,
+        style: { width: w + "%", background: PHASE_COLOR[ph.name], color: PHASE_INK[ph.name] } }, w > 7 ? ph.name : ""));
+    });
+    const todayPct = ((new Date() - parse(first)) / total) * 100;
+    bar.append(h("div", { class: "season-today", style: { left: Math.max(0, Math.min(100, todayPct)) + "%" }, title: "Today" }));
+    const legendRow = h("div", { class: "season-legend" }, season.phases.map((ph) =>
+      h("span", null, h("i", { style: { background: PHASE_COLOR[ph.name] } }), h("b", null, ph.name), ` ${shortDate(ph.start)} - ${shortDate(ph.end)} · ${weeksBetween(ph.start, ph.end)} wk`)),
+      h("span", null, h("i", { class: "race" }), h("b", null, "Race"), ` ${shortDate(season.race.date)}`));
+    wrap.append(bar, legendRow);
+    return wrap;
+  }
+
+  async function renderProfile(view) {
+    const data = await api("/api/profile");
+    const p = JSON.parse(JSON.stringify(data.profile));
+    const th = data.thresholds_in_use;
+    const saveBtn = h("button", { class: "btn primary", type: "button", disabled: true }, "Save profile");
+    const saveState = h("span", { class: "muted" }, p.updated_at ? `Last updated ${ago(p.updated_at)} by ${p.updated_by === "coach" ? "your coach" : p.updated_by}` : "Not saved yet");
+    const markDirty = () => { saveBtn.disabled = false; saveState.textContent = "Unsaved changes"; };
+    const bind = (obj, key, type = "text", o = {}) => {
+      const el = type === "textarea" ? h("textarea", { rows: o.rows || 3, placeholder: o.placeholder || "" })
+        : type === "select" ? h("select", null, o.options.map(([v, l]) => h("option", { value: v }, l)))
+        : h("input", { type, placeholder: o.placeholder || "", step: o.step || null, min: o.min ?? null });
+      el.value = obj[key] ?? "";
+      el.addEventListener(type === "select" ? "change" : "input", () => {
+        obj[key] = type === "number" ? (el.value === "" ? null : Number(el.value)) : el.value;
+        markDirty();
+      });
+      return el;
+    };
+    const fld = (label, el, hint) => h("label", { class: "field" }, label, el, hint ? h("span", { class: "hint" }, hint) : null);
+
+    const seasonCard = card("Season", null, data.season
+      ? h("div", { class: "stack" },
+        h("div", { class: "row", style: { alignItems: "baseline", gap: "10px" } },
+          h("span", { class: "hero-num" }, data.season.weeks_to_race), h("span", null, "weeks to ", h("b", null, data.season.race.name), ` · ${fmtDay(data.season.race.date)} ${data.season.race.date.slice(0, 4)}`)),
+        seasonLine(data.season), seasonStrip(data.season))
+      : h("div", { class: "empty" }, "Add a goal with a date (priority A) to see your season plan."), { cls: "span-all" });
+
+    const goalsBody = h("tbody");
+    const types = Object.entries(data.goal_types);
+    const drawGoals = () => {
+      goalsBody.replaceChildren(...p.goals.map((g, i) => {
+        const del = h("button", { class: "btn-ghost", type: "button", title: "Remove goal", "aria-label": "Remove goal" }, "×");
+        del.onclick = () => { p.goals.splice(i, 1); drawGoals(); markDirty(); };
+        return h("tr", null,
+          h("td", null, bind(g, "priority", "select", { options: [["A", "A"], ["B", "B"], ["C", "C"]] })),
+          h("td", null, bind(g, "name", "text", { placeholder: "Event name" })),
+          h("td", null, bind(g, "date", "date")),
+          h("td", null, bind(g, "type", "select", { options: types })),
+          h("td", null, bind(g, "target", "text", { placeholder: "e.g. sub-10:00" })),
+          h("td", null, bind(g, "status", "select", { options: [["planned", "Planned"], ["registered", "Registered"], ["done", "Done"]] })),
+          h("td", null, bind(g, "notes", "text", { placeholder: "Notes" })),
+          h("td", null, del));
+      }));
+    };
+    drawGoals();
+    const addGoal = h("button", { class: "btn", type: "button" }, "+ Add goal");
+    addGoal.onclick = () => { p.goals.push({ priority: "B", name: "", date: "", type: "other", target: "", status: "planned", notes: "" }); drawGoals(); markDirty(); };
+    const goalsCard = card("Goals & races", "A = season goal, B/C = supporting races", h("div", { class: "stack" },
+      h("div", { class: "tbl-wrap" }, h("table", { class: "tbl goals-tbl" },
+        h("thead", null, h("tr", null, ["Prio", "Event", "Date", "Type", "Target", "Status", "Notes", ""].map((c) => h("th", { class: "l" }, c)))), goalsBody)),
+      h("div", null, addGoal)), { cls: "span-all" });
+
+    const about = card("About me", data.age != null ? `${data.age} years` : null, h("div", { class: "form-grid" },
+      fld("Name", bind(p, "name")), fld("Date of birth", bind(p, "birth_date", "date")),
+      fld("Sex", bind(p, "sex", "select", { options: [["", "-"], ["male", "Male"], ["female", "Female"], ["other", "Other"]] })),
+      fld("Height (cm)", bind(p, "height_cm", "number")),
+      fld("Weight (kg)", bind(p, "weight_kg", "number", { step: "0.1" }), data.latest_weight ? `Garmin: ${data.latest_weight} kg` : null),
+      fld("Coach language", bind(p, "language", "text", { placeholder: "e.g. Dutch" })),
+      h("div", { class: "span-all" }, fld("Weekly schedule (work, study, life)", bind(p, "schedule", "textarea"))),
+      h("div", { class: "span-all" }, fld("Sport background & PRs", bind(p, "background", "textarea")))));
+
+    const training = card("Training", null, h("div", { class: "form-grid" },
+      fld("Structured training starts", bind(p, "training_start", "date")),
+      fld("Hours / week now", bind(p, "hours_now", "number", { step: "0.5", min: 0 })),
+      fld("Max hours / week (peak)", bind(p, "hours_max", "number", { step: "0.5", min: 0 })),
+      h("div", { class: "span-all" }, fld("Availability (swim days, long-session days, facilities)", bind(p, "availability", "textarea", { rows: 4 })))));
+
+    const t = p.thresholds;
+    const inUse = (v, src) => (v ? `in use: ${Math.round(v)} (${src})` : null);
+    const thresholds = card("Thresholds", "these drive TSS and zones", h("div", { class: "form-grid" },
+      fld("FTP (W)", bind(t, "ftp_w", "number"), inUse(th.ftp, th.ftp_source)),
+      fld("Resting HR", bind(t, "rhr", "number"), th.rhr_30d ? `Garmin 30-day avg: ${th.rhr_30d}` : null),
+      fld("LTHR run", bind(t, "lthr_run", "number"), inUse(th.lthr, th.lthr_source)),
+      fld("LTHR bike", bind(t, "lthr_bike", "number"), inUse(th.lthr_bike, th.lthr_bike_source)),
+      fld("Max HR run", bind(t, "max_hr_run", "number"), inUse(th.max_hr, th.max_hr_source)),
+      fld("Max HR bike", bind(t, "max_hr_bike", "number")),
+      fld("Swim pace / 100 m", bind(t, "swim_100m_pace", "text", { placeholder: "1:25" })),
+      fld("Run threshold pace / km", bind(t, "run_threshold_pace", "text", { placeholder: "4:10" }))));
+
+    const he = p.health;
+    const health = card("Health & limitations", "the coach always respects these", h("div", { class: "stack" },
+      fld("Current injuries / limitations", bind(he, "current", "textarea")),
+      fld("History", bind(he, "history", "textarea", { rows: 2 })),
+      fld("Medical (checks, clearance, conditions)", bind(he, "medical", "textarea", { rows: 2 }))));
+
+    const prefs = card("Equipment & coaching", null, h("div", { class: "stack" },
+      fld("Equipment", bind(p, "equipment", "textarea")),
+      fld("How you want to be coached", bind(p, "coach_style", "textarea", { rows: 2 }))));
+
+    const notes = card("Notes for the coach", "anything else that doesn't change often", bind(p, "notes", "textarea", { rows: 5 }), { cls: "span-all" });
+
+    const hist = await api("/api/profile/history");
+    const histCard = card("Change log", "edits by you and by the coach", hist.length
+      ? table(["When", "By", "Changed", "Why"], hist.map((r) => [r.ts.replace("T", " ").slice(0, 16), r.by === "coach" ? "Coach" : r.by, r.fields, r.reason || ""]))
+      : h("div", { class: "muted" }, "No changes yet."), { cls: "span-all" });
+
+    saveBtn.onclick = async () => {
+      saveBtn.disabled = true;
+      try {
+        await api("/api/profile", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) });
+        toast("Profile saved - new coach chats will use it");
+        render(true);
+      } catch (e) { saveBtn.disabled = false; toast("Save failed: " + e.message); }
+    };
+    const ask = h("button", { class: "btn discuss", type: "button" }, chatIcon(), "Review with Claude");
+    ask.onclick = () => HW.chat.open({ label: "My profile", context: "the athlete's Profile tab (goals, season plan, availability, thresholds, health)",
+      prompt: "Look at my profile and season plan. Is anything missing or unrealistic, and what should my first weeks look like?" });
+    view.replaceChildren(
+      h("div", { class: "toolbar" }, h("h2", null, "Profile & goals"), ask),
+      h("div", { class: "grid g2" }, seasonCard, goalsCard, about, training, thresholds, health, prefs, notes, histCard),
+      h("div", { class: "savebar" }, saveBtn, saveState));
+  }
+
   /* ================================================================ COACH */
   function mdToNodes(md) {
     // small markdown renderer (briefing + chat): headings, lists, tables, code, bold/italic/inline code
@@ -661,7 +823,7 @@
   window.HW.ui = { h, mdToNodes, toast, fmtDay, api, post, chatIcon, todayIso };
 
   /* ---------------------------------------------------------------- router */
-  const VIEWS = { home: renderHome, calendar: renderCalendar, dashboard: renderDashboard, coach: renderCoach, settings: renderSettings };
+  const VIEWS = { home: renderHome, calendar: renderCalendar, dashboard: renderDashboard, profile: renderProfile, coach: renderCoach, settings: renderSettings };
   let current = null;
   async function render(soft) {
     const name = (location.hash.slice(1).split("?")[0] || "home");

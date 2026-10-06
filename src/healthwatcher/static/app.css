@@ -130,7 +130,7 @@ main { padding: 20px; max-width: 1680px; margin: 0 auto; }
 .seg button { border: 0; background: none; height: 30px; padding: 0 12px; cursor: pointer; font-size: 13px; color: var(--ink-2); font-weight: 600; }
 .seg button + button { border-left: 1px solid var(--border); }
 .seg button.on { background: var(--hover); color: var(--accent-ink); }
-input[type=text], input[type=email], input[type=password], input[type=date], textarea, select {
+input[type=text], input[type=email], input[type=password], input[type=date], input[type=number], textarea, select {
   height: 34px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
 }
 textarea { height: auto; padding: 8px 10px; resize: vertical; width: 100%; }
@@ -385,3 +385,33 @@ body.chat-open main { margin-right: var(--chat-w); }
 .chat-idea:hover { background: var(--hover); }
 .btn.discuss { height: 30px; color: var(--accent-ink); }
 .addci.wkchat { display: inline-flex; align-items: center; gap: 4px; align-self: flex-end; font-size: 11px; font-weight: 600; }
+
+/* ---------------------------------------------------------------- profile */
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; }
+.form-grid .span-all { grid-column: 1 / -1; }
+@media (max-width: 600px) { .form-grid { grid-template-columns: minmax(0, 1fr); } }
+.field input:not([type=checkbox]), .field select, .field textarea { width: 100%; font-weight: 400; color: var(--ink); }
+.field .hint { font-weight: 400; color: var(--muted); font-size: 11px; }
+.goals-tbl td { padding: 4px; }
+.goals-tbl input, .goals-tbl select { width: 100%; min-width: 80px; height: 30px; }
+.goals-tbl td:nth-child(1) select { min-width: 54px; }
+.goals-tbl td:nth-child(2) input { min-width: 180px; }
+.goals-tbl td:nth-child(7) input { min-width: 160px; }
+.hero-num { font-size: 48px; font-weight: 700; line-height: 1; }
+.season-line { font-size: 13px; color: var(--ink-2); }
+.season-line b { color: var(--ink); }
+.season { display: grid; gap: 10px; }
+.season-bar { position: relative; display: flex; height: 30px; border-radius: 6px; overflow: hidden; gap: 2px; background: var(--surface); }
+.season-seg { display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; }
+.season-seg.current { box-shadow: inset 0 0 0 2px var(--ink); }
+.season-today { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--critical); }
+.season-legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12px; color: var(--ink-2); }
+.season-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.season-legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; border: 1px solid var(--border); }
+.season-legend i.race { background: var(--ink); border-radius: 50%; }
+.savebar {
+  position: sticky; bottom: 0; z-index: 10; margin-top: 16px; padding: 12px 16px;
+  display: flex; align-items: center; gap: 12px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 -4px 16px rgba(0,0,0,.06);
+}
+.wk .badge.coach { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-ink); }

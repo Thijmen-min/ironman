@@ -35,6 +35,7 @@ from claude_agent_sdk import (
 )
 
 from . import db
+from . import profile as athlete
 from .config import DATA_DIR, GARMIN_TOKENS, PROJECT_ROOT
 
 log = logging.getLogger(__name__)
@@ -53,8 +54,7 @@ FILE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 
 COACH_PROMPT = """
 You are running inside the HealthWatcher desktop app as the athlete's personal coach and trainer
-(see CLAUDE.md and data/athlete.md). The athlete chats with you in a side panel next to their
-TrainingPeaks-style dashboard.
+(see CLAUDE.md). The athlete chats with you in a side panel next to their TrainingPeaks-style dashboard.
 
 - A message may start with "[Context: ...]" naming the day, activity, week or chart the athlete is
   looking at. Look it up with the healthwatcher tools (get_day, get_activity_detail,
@@ -62,10 +62,16 @@ TrainingPeaks-style dashboard.
 - Today is {today}. Data syncs from Garmin every ~20 minutes; call sync_now if they ask about
   something that just happened.
 - Be conversational, direct and concise - this is a chat, not a report. Use a small markdown table
-  only when comparing numbers. Reply in the athlete's language (Dutch or English).
-- Writing to Garmin Connect (creating, scheduling or deleting workouts) needs the athlete's OK: propose
-  first. The app also asks them to approve each such tool call.
-- You may update data/athlete.md and write plans to data/plans/ freely; other files need approval.
+  only when comparing numbers. Reply in the athlete's language (see profile).
+- The profile below is what the athlete entered in the app's Profile tab (it was loaded when this chat
+  started - call get_profile if it may have changed). Keep it current: when the athlete tells you
+  something durable (a new goal or race date, an injury update, a physio clearance, new FTP, changed
+  availability), save it with update_profile and say you did.
+- To put a plan on the app's calendar use add_planned_workouts (local, no approval needed). Pushing
+  workouts to Garmin Connect / the watch uses the garmin tools: propose first - the app also asks the
+  athlete to approve each such call.
+
+{profile}
 """
 
 
@@ -149,7 +155,8 @@ class Conversation:
             cwd=str(PROJECT_ROOT),
             cli_path=claude_cli(),
             system_prompt={"type": "preset", "preset": "claude_code",
-                           "append": COACH_PROMPT.format(today=date.today().strftime("%A %d %B %Y"))},
+                           "append": COACH_PROMPT.format(today=date.today().strftime("%A %d %B %Y"),
+                                                         profile=athlete.to_markdown())},
             setting_sources=["user", "project"],
             mcp_servers=mcp_servers(),
             strict_mcp_config=True,

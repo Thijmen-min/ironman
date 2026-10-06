@@ -88,6 +88,11 @@ CREATE TABLE IF NOT EXISTS checkins (
 
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT);
 
+-- Every profile change (by the athlete or the coach), with the previous version for undo.
+CREATE TABLE IF NOT EXISTS profile_history (
+    ts TEXT, by TEXT, fields TEXT, reason TEXT, snapshot TEXT
+);
+
 -- Coach chat (embedded Claude Code sessions)
 CREATE TABLE IF NOT EXISTS chat_conversations (
     id TEXT PRIMARY KEY,
@@ -161,9 +166,19 @@ def session(readonly: bool = False) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+# Columns added after the first release: (table, column, type).
+MIGRATIONS = [
+    ("planned", "description", "TEXT"),   # workout description / coach notes
+]
+
+
 def init() -> None:
     with session() as c:
         c.executescript(SCHEMA)
+        for table, col, typ in MIGRATIONS:
+            cols = {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
+            if col not in cols:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
 
 
 def put_raw(c: sqlite3.Connection, day: str, kind: str, data: Any) -> None:

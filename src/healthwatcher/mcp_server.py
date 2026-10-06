@@ -33,6 +33,70 @@ def get_coach_briefing(days: int = 14) -> str:
 
 
 @mcp.tool()
+def get_profile() -> dict[str, Any]:
+    """The athlete's profile from the app's Profile tab: personal details, goals/races (with priority, date,
+    target, status), training start date, season phases (prep/base/build/peak/taper) and current phase,
+    available hours, thresholds, health limitations, equipment, coaching preferences, notes."""
+    from . import profile as athlete
+
+    p = athlete.get()
+    return {"profile": p, "season": athlete.season(p), "age": athlete.age(p), "goal_types": athlete.GOAL_TYPES}
+
+
+@mcp.tool()
+def update_profile(changes: dict[str, Any], reason: str) -> dict[str, Any]:
+    """Update the athlete's profile (shown in the app's Profile tab). `changes` is deep-merged: nested dicts
+    (thresholds, health) merge key by key; lists (goals) are REPLACED, so send the full goals list - read it
+    with get_profile first and keep each goal's id. Goal fields: id, name, date (YYYY-MM-DD), type (see
+    goal_types), priority (A/B/C), target, status (planned/registered/done), notes. Only record what the
+    athlete told you or agreed to; `reason` is shown to them in the change log."""
+    from . import profile as athlete
+
+    allowed = set(athlete.EMPTY) - {"updated_at", "updated_by"}
+    bad = [k for k in changes if k not in allowed]
+    if bad:
+        return {"error": f"Unknown profile fields {bad}. Allowed: {sorted(allowed)}"}
+    p = athlete.save(changes, by="coach", reason=reason, merge=True)
+    return {"status": "saved", "season": athlete.season(p)}
+
+
+@mcp.tool()
+def add_planned_workouts(workouts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Put workouts on the app's Calendar as coach-planned sessions (local to the app - NOT pushed to the
+    watch; use the garmin tools for that, with approval). Each item: day (YYYY-MM-DD), name, sport
+    (running/cycling/swimming/strength_training/walking/...), duration_min, optional distance_km and
+    description (structure, targets, purpose). Returns the created ids."""
+    import json as _json
+    import uuid as _uuid
+
+    ids = []
+    with db.session() as c:
+        for w in workouts:
+            if not w.get("day") or not w.get("name"):
+                continue
+            wid = f"coach:{_uuid.uuid4().hex[:10]}"
+            db.upsert(c, "planned", "id", {
+                "id": wid, "day": w["day"], "name": w["name"], "sport": w.get("sport") or "other",
+                "duration_s": float(w["duration_min"]) * 60 if w.get("duration_min") else None,
+                "distance_m": float(w["distance_km"]) * 1000 if w.get("distance_km") else None,
+                "workout_id": None, "item_type": "coach", "description": w.get("description"),
+                "raw": _json.dumps(w),
+            })
+            ids.append(wid)
+    return {"created": ids}
+
+
+@mcp.tool()
+def delete_planned_workouts(ids: list[str]) -> dict[str, Any]:
+    """Remove coach-planned workouts from the app's Calendar (only ids starting with 'coach:')."""
+    ids = [i for i in ids if str(i).startswith("coach:")]
+    with db.session() as c:
+        for i in ids:
+            c.execute("DELETE FROM planned WHERE id=?", (i,))
+    return {"deleted": ids}
+
+
+@mcp.tool()
 def get_readiness(day: str | None = None) -> dict[str, Any]:
     """Rule-based readiness verdict (Rest / Recovery / Easy / Train / Go) with flags for a day (YYYY-MM-DD, default today)."""
     return analytics.assessment(day)
@@ -155,9 +219,10 @@ def get_weekly_summary(weeks: int = 12) -> list[dict[str, Any]]:
 
 @mcp.tool()
 def get_planned_workouts(days_ahead: int = 28) -> list[dict[str, Any]]:
-    """Workouts scheduled in the Garmin Connect calendar (incl. Garmin Coach plans)."""
+    """Planned workouts: from the Garmin Connect calendar (item_type workout etc., incl. Garmin Coach plans)
+    and coach-planned sessions in the app (item_type 'coach', ids 'coach:...')."""
     t = date.today()
-    return db.rows("SELECT id, day, name, sport, duration_s, distance_m, workout_id, item_type FROM planned "
+    return db.rows("SELECT id, day, name, sport, duration_s, distance_m, workout_id, item_type, description FROM planned "
                    "WHERE day BETWEEN ? AND ? ORDER BY day", (t.isoformat(), (t + timedelta(days=days_ahead)).isoformat()))
 
 

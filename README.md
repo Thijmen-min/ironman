@@ -41,6 +41,7 @@ Optional:
 | Home | Today's readiness verdict and why, key tiles (form, sleep, HRV, RHR, body battery, readiness, stress, steps), minute-by-minute HR/stress/body battery, daily check-in, recent and planned sessions |
 | Calendar | TrainingPeaks-style weeks with workout cards (planned/done/missed), daily metrics, week summary column (TSS, time, distance, CTL/ATL/TSB, per sport) |
 | Dashboard | Performance Management Chart (Fitness/Fatigue/Form, with projection over planned workouts), weekly TSS by sport, sport summary, time in HR zones, wellness small multiples |
+| Profile | Your goals and races (A/B/C), season plan (prep, base, build, peak, taper) worked back from the A-race, training start, availability, thresholds (these drive TSS), health and limitations, equipment, coaching preferences, and a change log of edits by you and by the coach |
 | Coach | A markdown briefing of everything relevant, with one click to copy it into Claude |
 
 ## Claude as coach
@@ -49,7 +50,9 @@ Optional:
 on the PMC chart. It runs a real Claude Code session (your installed `claude` CLI and its claude.ai login, so it
 uses your **subscription**, not API billing) with full access to the data below. Read-only tools run freely.
 Anything that writes to Garmin Connect, such as scheduling a workout, shows an Allow/Deny card first.
-Conversations are saved and can be resumed.
+Conversations are saved and can be resumed. Every new chat starts with your **Profile** loaded into the coach's
+instructions. The coach can also write to the app: it can update your profile (logged in the change log) and put
+planned workouts on the Calendar (marked *Coach*). Pushing workouts to your watch still needs your approval.
 
 **In the terminal:** `.mcp.json` registers two MCP servers for Claude Code in this folder:
 

@@ -523,7 +523,7 @@ def sync_calendar(api: Garmin, today: date) -> None:
                 })
             # Drop items that were removed from this month in Garmin Connect.
             month_prefix = f"{y}-{m:02d}-%"
-            q = "DELETE FROM planned WHERE day LIKE ?"
+            q = "DELETE FROM planned WHERE day LIKE ? AND COALESCE(item_type, '') != 'coach'"
             if ids:
                 q += f" AND id NOT IN ({','.join('?' * len(ids))})"
             c.execute(q, [month_prefix, *ids])

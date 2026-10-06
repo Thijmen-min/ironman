@@ -41,31 +41,45 @@ def _env_float(name: str) -> float | None:
 
 
 def thresholds() -> dict[str, Any]:
+    """Training thresholds. Precedence: Profile tab > .env > Garmin > estimate."""
+    from . import profile as athlete
+
+    pth = athlete.get()["thresholds"]
     prof = db.kv_get("garmin.profile") or {}
     lt = prof.get("lactate_threshold") or {}
     ftp_data = prof.get("ftp") or {}
+
+    def first(*cands):
+        for value, source in cands:
+            if value not in (None, "", 0):
+                return float(value), source
+        return None, None
+
     max_hr_obs = db.rows(
         "SELECT max_hr FROM activities WHERE max_hr IS NOT NULL AND day >= date('now','-365 day') ORDER BY max_hr DESC LIMIT 5"
     )
-    max_hr = _env_float("HW_MAX_HR") or (
-        statistics.median([r["max_hr"] for r in max_hr_obs]) if max_hr_obs else None
-    )
-    lthr = _env_float("HW_LTHR") or pick(
-        lt, "speed_and_heart_rate.heartRate", "heartRate", "lactateThresholdHeartRate"
-    )
-    lthr_src = "env" if os.getenv("HW_LTHR") else ("garmin" if lthr else None)
+    max_hr, max_src = first((pth.get("max_hr_run"), "profile"), (_env_float("HW_MAX_HR"), "env"),
+                            (statistics.median([r["max_hr"] for r in max_hr_obs]) if max_hr_obs else None, "observed"))
+    max_bike, _ = first((pth.get("max_hr_bike"), "profile"))
+    lthr, lthr_src = first((pth.get("lthr_run"), "profile"), (_env_float("HW_LTHR"), "env"),
+                           (pick(lt, "speed_and_heart_rate.heartRate", "heartRate", "lactateThresholdHeartRate"), "garmin"))
     if not lthr and max_hr:
         lthr, lthr_src = round(max_hr * 0.89), "estimated (89% of max HR)"
     if not lthr:
-        lthr, lthr_src = 170, "default"
-    ftp = _env_float("HW_FTP") or pick(ftp_data, "functionalThresholdPower", "ftp")
+        lthr, lthr_src = 170.0, "default"
+    lthr_bike, lthr_bike_src = first((pth.get("lthr_bike"), "profile"))
+    if not lthr_bike and max_bike:
+        lthr_bike, lthr_bike_src = round(max_bike * 0.89), "estimated (89% of bike max HR)"
+    if not lthr_bike:
+        lthr_bike, lthr_bike_src = lthr, "same as run"
+    ftp, ftp_src = first((pth.get("ftp_w"), "profile"), (_env_float("HW_FTP"), "env"),
+                         (pick(ftp_data, "functionalThresholdPower", "ftp"), "garmin"))
     rhr = db.rows("SELECT AVG(rhr) v FROM daily WHERE rhr IS NOT NULL AND day >= date('now','-30 day')")
     return {
-        "lthr": lthr,
-        "lthr_source": lthr_src,
-        "ftp": ftp,
-        "ftp_source": "env" if os.getenv("HW_FTP") else ("garmin" if ftp else None),
-        "max_hr": max_hr,
+        "lthr": lthr, "lthr_source": lthr_src,
+        "lthr_bike": lthr_bike, "lthr_bike_source": lthr_bike_src,
+        "ftp": ftp, "ftp_source": ftp_src,
+        "max_hr": max_hr, "max_hr_source": max_src,
         "rhr_30d": round(rhr[0]["v"], 1) if rhr and rhr[0]["v"] else None,
         "sleep_target_h": _env_float("HW_SLEEP_TARGET_H") or 8.0,
     }
@@ -79,8 +93,9 @@ def activity_tss(a: dict[str, Any], th: dict[str, Any]) -> tuple[float, str]:
     if group == "Bike" and power and th.get("ftp"):
         intensity = power / th["ftp"]
         return round(hours * intensity * intensity * 100, 1), "power"
-    if a.get("avg_hr") and th.get("lthr"):
-        intensity = min(a["avg_hr"] / th["lthr"], 1.15)
+    lthr = th.get("lthr_bike") if group == "Bike" else th.get("lthr")
+    if a.get("avg_hr") and lthr:
+        intensity = min(a["avg_hr"] / lthr, 1.15)
         return round(hours * intensity * intensity * 100, 1), "hr"
     return round(hours * _DEFAULT_TSS_PER_H[group], 1), "duration"
 
@@ -355,9 +370,11 @@ def briefing(days: int = 14) -> str:
     daily = load_daily((today - timedelta(days=90)).isoformat(), t)
     latest = next((daily[k] for k in sorted(daily, reverse=True) if daily[k].get("vo2max")), {})
     weight = next((daily[k]["weight_kg"] for k in sorted(daily, reverse=True) if daily[k].get("weight_kg")), None)
-    out = [f"# Athlete briefing - {t}", ""]
+    from . import profile as athlete
+
+    out = [f"# Athlete briefing - {t}", "", athlete.to_markdown(), ""]
     out += [
-        "## Profile",
+        "## Measured (Garmin) & thresholds in use",
         f"- Name: {prof.get('name') or '-'}; units: {prof.get('units') or '-'}",
         f"- LTHR {th['lthr']} bpm ({th['lthr_source']}); FTP {th['ftp'] or 'unknown'} W; max HR {th['max_hr'] or '-'}; 30d resting HR {th['rhr_30d'] or '-'}",
         f"- VO2max {latest.get('vo2max') or '-'} (cycling {latest.get('vo2max_cycling') or '-'}); weight {weight or '-'} kg",

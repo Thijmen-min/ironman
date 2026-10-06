@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Red
 from fastapi.staticfiles import StaticFiles
 
 from . import analytics, chat, db, garmin_sync, strava
+from . import profile as athlete
 from .config import PROJECT_ROOT, STATIC_DIR, SYNC_INTERVAL_MIN
 
 log = logging.getLogger(__name__)
@@ -167,7 +168,7 @@ def _clean_activity(a: dict[str, Any]) -> dict[str, Any]:
 def calendar(start: str | None = None, end: str | None = None) -> dict[str, Any]:
     s, e = _range(start, end, 27)
     acts = analytics.load_activities(s, e)
-    planned = db.rows("SELECT id, day, name, sport, duration_s, distance_m, item_type FROM planned WHERE day BETWEEN ? AND ?", (s, e))
+    planned = db.rows("SELECT id, day, name, sport, duration_s, distance_m, item_type, description FROM planned WHERE day BETWEEN ? AND ?", (s, e))
     daily = analytics.load_daily(s, e)
     checkins = {r["day"]: r for r in db.rows("SELECT * FROM checkins WHERE day BETWEEN ? AND ?", (s, e))}
     for p in planned:
@@ -313,4 +314,36 @@ def chat_permission(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
 @app.post("/api/chat/interrupt")
 async def chat_interrupt(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     await chat.interrupt(payload["conversation_id"])
+    return {"status": "ok"}
+
+
+# ---------------------------------------------------------------- athlete profile
+
+
+@app.get("/api/profile")
+def get_profile() -> dict[str, Any]:
+    p = athlete.get()
+    return {"profile": p, "season": athlete.season(p), "age": athlete.age(p),
+            "goal_types": athlete.GOAL_TYPES, "thresholds_in_use": analytics.thresholds(),
+            "latest_weight": (db.rows("SELECT weight_kg FROM daily WHERE weight_kg IS NOT NULL ORDER BY day DESC LIMIT 1") or [{}])[0].get("weight_kg")}
+
+
+@app.put("/api/profile")
+def put_profile(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    allowed = set(athlete.EMPTY) - {"updated_at", "updated_by"}
+    p = athlete.save({k: v for k, v in payload.items() if k in allowed}, by="you", reason="edited in the app")
+    return {"profile": p, "season": athlete.season(p)}
+
+
+@app.get("/api/profile/history")
+def profile_history() -> list[dict[str, Any]]:
+    return athlete.history()
+
+
+@app.delete("/api/planned/{pid}")
+def delete_planned(pid: str) -> dict[str, Any]:
+    if not pid.startswith("coach:"):
+        raise HTTPException(400, "Only coach-planned workouts can be removed here; Garmin ones live in Garmin Connect.")
+    with db.session() as c:
+        c.execute("DELETE FROM planned WHERE id=?", (pid,))
     return {"status": "ok"}

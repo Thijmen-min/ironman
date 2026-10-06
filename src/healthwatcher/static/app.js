@@ -74,6 +74,17 @@
     return s;
   };
   const status = (level, text) => h("span", { class: `status ${level}` }, h("span", { class: "ico", "aria-hidden": "true" }, STATUS_ICON[level] || "•"), text);
+  const discuss = (label, context, prompt) => {
+    const b = h("button", { class: "btn discuss", type: "button", title: "Open the coach chat about this" }, chatIcon(), "Discuss with Claude");
+    b.onclick = (e) => { e.stopPropagation(); closeDrawer(); HW.chat.open({ label, context, prompt }); };
+    return b;
+  };
+  const chatIcon = () => {
+    const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    s.setAttribute("viewBox", "0 0 24 24"); s.setAttribute("width", "15"); s.setAttribute("height", "15"); s.setAttribute("aria-hidden", "true");
+    s.innerHTML = '<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>';
+    return s;
+  };
   const toast = (msg) => { const t = $("#toast"); t.textContent = msg; t.hidden = false; clearTimeout(toast._t); toast._t = setTimeout(() => (t.hidden = true), 2600); };
 
   function card(title, sub, body, opts = {}) {
@@ -174,7 +185,9 @@
       kv("Avg HR", r0(a.avg_hr), "bpm"), kv("Max HR", r0(a.max_hr), "bpm"), kv("Power", r0(a.norm_power || a.avg_power), a.norm_power ? "W NP" : "W"),
       kv("Aerobic TE", r1(a.aerobic_te)), kv("Anaerobic TE", r1(a.anaerobic_te)), kv("Elevation", r0(a.elev_gain_m), "m"),
       kv("Calories", r0(a.calories), "kcal"), kv("Suffer score", r0(a.suffer_score)), kv("Kudos / PRs", `${a.kudos ?? "–"} / ${a.pr_count ?? "–"}`));
-    const nodes = [stats];
+    const ref = a.garmin_id ? `garmin activity id ${a.garmin_id}` : `strava activity id ${a.strava_id}`;
+    const nodes = [h("div", null, discuss(`${a.name || a.sport} · ${fmtDay(a.day)}`,
+      `${ref} - "${a.name}" (${a.sport}) on ${a.day} at ${a.start_local.slice(11)}`)), stats];
     const zones = [1, 2, 3, 4, 5].map((z) => a[`hr_z${z}_s`] || 0);
     if (zones.some((z) => z > 0)) {
       const zb = h("div");
@@ -235,7 +248,8 @@
           lvl ? status(lvl, { critical: "Rest advised", serious: "Recovery advised", warning: "Some fatigue signals", good: "Good to train" }[lvl]) : null,
           h("div", { class: "advice" }, a.advice),
           a.form_zone ? h("div", { class: "muted" }, `Form (TSB) zone: ${a.form_zone}`) : null)),
-      a.flags.length ? h("ul", { class: "flags" }, a.flags.map((f) => h("li", null, status(f.level, ""), h("span", { class: "metric" }, f.metric), h("span", { class: "ink2" }, f.message)))) : null));
+      a.flags.length ? h("ul", { class: "flags" }, a.flags.map((f) => h("li", null, status(f.level, ""), h("span", { class: "metric" }, f.metric), h("span", { class: "ink2" }, f.message)))) : null,
+      h("div", null, discuss(`Today · ${a.verdict}`, `today's readiness verdict for ${t} ("${a.verdict}")`, "Why this verdict, and what exactly should I do today?"))));
 
     const tile = (label, value, unit, delta, spark) => {
       const sp = h("div", { class: "spark" });
@@ -364,7 +378,9 @@
           d.planned.filter((p) => !p.completed || d.day >= t).filter((p) => !p.completed).map((p) => workoutCard(p, true))));
       });
       const wk = weeks[days[0].day] || {};
-      const sum = h("div", { class: "cal-sum" },
+      const wkBtn = h("button", { class: "addci wkchat", title: "Discuss this week with Claude" }, chatIcon(), "Discuss week");
+      wkBtn.onclick = () => HW.chat.open({ label: `Week of ${fmtDay(days[0].day)}`, context: `training week ${days[0].day} to ${days[6].day} (Mon-Sun)` });
+      const sum = h("div", { class: "cal-sum" }, wkBtn,
         h("div", { class: "row" }, h("span", null, "Total TSS"), h("b", null, wk.tss ?? 0)),
         h("div", { class: "row" }, h("span", null, "Duration"), h("b", null, dur(wk.duration_s))),
         h("div", { class: "row" }, h("span", null, "Distance"), h("b", null, km(wk.distance_m) + " km")),
@@ -386,6 +402,7 @@
     const kv = (k, v, u) => h("div", null, h("div", { class: "k" }, k), h("div", { class: "v" }, v ?? "–", u ? h("small", null, " " + u) : null));
     const ci = await api(`/api/checkin?day=${d.day}`);
     openDrawer(h("h2", null, fmtDay(d.day)), [
+      h("div", null, discuss(fmtDay(d.day), `calendar day ${d.day} (${fmtDay(d.day)})`)),
       h("div", { class: "kv" },
         kv("Sleep", m.sleep_s ? hrs(m.sleep_s) : null, "h"), kv("Sleep score", m.sleep_score), kv("HRV", m.hrv_last_night, "ms"),
         kv("Resting HR", m.rhr, "bpm"), kv("BB at wake", m.bb_wake), kv("Readiness", m.readiness),
@@ -481,6 +498,9 @@
 
     C.time(pmcEl, {
       n: days.length, label: (i) => fmtDay(days[i]), ticks: dayTicks(days), todayIndex: todayIdx >= 0 ? todayIdx : null, aria: "Performance management chart",
+      extraRows: () => [{ color: null, value: "", name: "Click to discuss this day" }],
+      onClick: (i) => HW.chat.open({ label: `PMC · ${fmtDay(days[i])}`,
+        context: `day ${days[i]} on the Performance Management Chart (CTL ${p[i].ctl}, ATL ${p[i].atl}, TSB ${p[i].tsb}, load ${p[i].tss}${p[i].projected ? ", projected from planned workouts" : ""})` }),
       panels: [
         { height: 230, zero: true, series: [
           { name: dashMetric === "tss" ? "Daily TSS" : "Daily load", type: "dots", color: "var(--tss-dot)", values: p.map((x) => x.tss || null), projectedFrom: pf },
@@ -506,35 +526,48 @@
 
   /* ================================================================ COACH */
   function mdToNodes(md) {
-    // tiny markdown renderer for the briefing (headings, lists, tables, bold/italic)
+    // small markdown renderer (briefing + chat): headings, lists, tables, code, bold/italic/inline code
     const root = h("div", { class: "md" });
     const inline = (s) => {
       const span = h("span");
-      s.split(/(\*\*[^*]+\*\*|_[^_]+_)/).forEach((part) => {
+      s.split(/(\*\*[^*]+\*\*|`[^`]+`|(?<![\w*])\*[^*\s][^*]*\*(?!\w)|(?<!\w)_[^_]+_(?!\w))/).forEach((part) => {
+        if (!part) return;
         if (/^\*\*.*\*\*$/.test(part)) span.append(h("b", null, part.slice(2, -2)));
-        else if (/^_.*_$/.test(part)) span.append(h("i", null, part.slice(1, -1)));
+        else if (/^`.*`$/.test(part)) span.append(h("code", null, part.slice(1, -1)));
+        else if (/^(\*|_).*(\*|_)$/.test(part) && part.length > 2) span.append(h("i", null, part.slice(1, -1)));
         else span.append(part);
       });
       return span;
     };
-    const lines = md.split("\n");
+    const lines = md.replace(/\r/g, "").split("\n");
     for (let i = 0; i < lines.length; i++) {
       const l = lines[i];
-      if (l.startsWith("# ")) root.append(h("h1", null, l.slice(2)));
-      else if (l.startsWith("## ")) root.append(h("h2", null, l.slice(3)));
-      else if (l.startsWith("- ")) {
+      const hm = /^(#{1,4}) (.*)$/.exec(l);
+      if (hm) root.append(h(hm[1].length === 1 ? "h1" : hm[1].length === 2 ? "h2" : "h3", null, inline(hm[2])));
+      else if (l.startsWith("```")) {
+        const buf = [];
+        i++;
+        while (i < lines.length && !lines[i].startsWith("```")) { buf.push(lines[i]); i++; }
+        root.append(h("pre", { class: "code" }, buf.join("\n")));
+      } else if (/^\s*[-*] /.test(l)) {
         const ul = h("ul");
-        while (i < lines.length && lines[i].startsWith("- ")) { ul.append(h("li", null, inline(lines[i].slice(2)))); i++; }
+        while (i < lines.length && /^\s*[-*] /.test(lines[i])) { ul.append(h("li", null, inline(lines[i].replace(/^\s*[-*] /, "")))); i++; }
         i--; root.append(ul);
+      } else if (/^\s*\d+[.)] /.test(l)) {
+        const ol = h("ol");
+        while (i < lines.length && /^\s*\d+[.)] /.test(lines[i])) { ol.append(h("li", null, inline(lines[i].replace(/^\s*\d+[.)] /, "")))); i++; }
+        i--; root.append(ol);
       } else if (l.startsWith("|")) {
         const rows = [];
         while (i < lines.length && lines[i].startsWith("|")) { rows.push(lines[i]); i++; }
         i--;
         const cells = (r) => r.split("|").slice(1, -1).map((c) => c.trim());
-        const t = h("table", null, h("thead", null, h("tr", null, cells(rows[0]).map((c) => h("th", null, c)))),
-          h("tbody", null, rows.slice(2).map((r) => h("tr", null, cells(r).map((c) => h("td", null, c))))));
+        const body = rows.slice(1).filter((r) => !/^\|[\s:|-]+\|$/.test(r));
+        const t = h("table", null, h("thead", null, h("tr", null, cells(rows[0]).map((c) => h("th", null, inline(c))))),
+          h("tbody", null, body.map((r) => h("tr", null, cells(r).map((c) => h("td", null, inline(c)))))));
         root.append(h("div", { class: "tbl-wrap" }, t));
-      } else if (l.trim()) root.append(h("p", null, inline(l)));
+      } else if (/^-{3,}$/.test(l.trim())) root.append(h("hr"));
+      else if (l.trim()) root.append(h("p", null, inline(l)));
     }
     return root;
   }
@@ -543,11 +576,15 @@
     const md = await api("/api/briefing?days=14");
     const copy = h("button", { class: "btn primary" }, "Copy briefing for Claude");
     copy.onclick = async () => { try { await navigator.clipboard.writeText(md); toast("Copied - paste it into Claude"); } catch (e) { toast("Copy failed - select the text instead"); } };
+    const openChat = h("button", { class: "btn primary" }, chatIcon(), "Open coach chat");
+    openChat.onclick = () => HW.chat.open({});
     const how = card("Using Claude as your coach", null, h("div", { class: "stack" },
-      h("div", null, "Claude Code in this project folder has two tools wired up: ", h("b", null, "healthwatcher"), " (this database: briefing, trends, load model, check-ins, SQL) and ",
-        h("b", null, "garmin"), " (live Garmin Connect: create & schedule structured workouts that sync to your watch)."),
-      h("pre", { class: "code" }, "cd \"" + (STATUS?.project_root || "healthwatcher") + "\"\nclaude\n> How am I recovering? Plan my next training week."),
-      h("div", { class: "muted" }, "Or copy the briefing below into any Claude chat.")));
+      h("div", null, "The coach chat runs a real Claude Code session in this project with two tool sets: ", h("b", null, "healthwatcher"),
+        " (everything in this app: any day, any workout incl. laps, trends, load model, check-ins, SQL) and ", h("b", null, "garmin"),
+        " (live Garmin Connect - it can build and schedule structured workouts on your watch after you approve)."),
+      h("div", null, "Use ", h("b", null, "Discuss with Claude"), " on a day, workout, week or a point on the PMC chart to start from that context."),
+      h("div", null, openChat),
+      h("div", { class: "muted" }, "The same tools work in the terminal: run claude in " + (STATUS?.project_root || "this folder") + ".")));
     view.replaceChildren(h("div", { class: "toolbar" }, h("h2", null, "Coach briefing"), copy),
       h("div", { class: "grid g3" }, h("div", { class: "card span2" }, h("div", { class: "card-body" }, mdToNodes(md))), h("div", { class: "stack" }, how)));
   }
@@ -620,6 +657,8 @@
         card("Garmin Connect", null, gBody), card("Strava", null, sBody),
         card("Training thresholds", "used for TSS - override in .env (HW_LTHR, HW_FTP)", thBody), card("Sync log", null, logBody)));
   }
+
+  window.HW.ui = { h, mdToNodes, toast, fmtDay, api, post, chatIcon, todayIso };
 
   /* ---------------------------------------------------------------- router */
   const VIEWS = { home: renderHome, calendar: renderCalendar, dashboard: renderDashboard, coach: renderCoach, settings: renderSettings };

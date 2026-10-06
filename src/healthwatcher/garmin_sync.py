@@ -21,6 +21,10 @@ from .config import BACKFILL_DAYS, DATA_DIR, GARMIN_TOKENS, INTRADAY_DAYS
 log = logging.getLogger(__name__)
 
 CALL_PAUSE_S = 0.35  # be polite to Garmin; avoids 429s during backfill
+RECHECK_HOURS = 6  # re-fetch the last week this often (late watch syncs, recomputed scores)
+BACKFILL_PER_RUN = 60  # older history days fetched per sync run (full history fills in over a few runs)
+SPLITS_PER_RUN = 40  # activities per run whose laps/splits get downloaded
+HISTORY_START = "2005-01-01"  # activities: ingest the complete history on first sync
 
 STATE: dict[str, Any] = {"running": False, "phase": "", "done": 0, "total": 0}
 _lock = threading.Lock()
@@ -315,22 +319,36 @@ class _FileLock:
         self.path.unlink(missing_ok=True)
 
 
-def _days_needing_sync(c, today: date, backfill_days: int) -> list[str]:
-    """Days never fetched, or last fetched before they were 'final' (noon the next day)."""
+def _days_needing_sync(c, today: date, backfill_days: int) -> tuple[list[str], int]:
+    """Pick the days to (re)fetch this run, most important first.
+
+    1. today + yesterday (always - data is still arriving)
+    2. the last 7 days if not refreshed for RECHECK_HOURS (watch may sync late, Garmin recomputes)
+    3. any older day never fetched / fetched before it was final, newest first, capped per run
+       so a multi-year history backfill trickles in without hammering Garmin.
+    Returns (days, history_days_still_missing).
+    """
     have = {
-        r[0]: r[1]
+        r[0]: datetime.fromisoformat(r[1])
         for r in c.execute(
             "SELECT day, MIN(fetched_at) FROM raw WHERE kind IN ('garmin.summary','garmin.sleep') GROUP BY day"
         )
     }
-    out = []
-    for i in range(backfill_days, -1, -1):
+    now = datetime.now()
+    recent, history = [], []
+    for i in range(0, backfill_days + 1):
         d = today - timedelta(days=i)
         ds = d.isoformat()
         final_at = datetime.combine(d + timedelta(days=1), datetime.min.time()) + timedelta(hours=12)
-        if ds not in have or datetime.fromisoformat(have[ds]) < final_at:
-            out.append(ds)
-    return out
+        last = have.get(ds)
+        if i <= 1:
+            recent.append(ds)
+        elif i <= 7 and (last is None or last < final_at or now - last > timedelta(hours=RECHECK_HOURS)):
+            recent.append(ds)
+        elif last is None or last < final_at:
+            history.append(ds)
+    picked = history[:BACKFILL_PER_RUN]
+    return recent + picked, len(history) - len(picked)
 
 
 def sync(backfill_days: int | None = None, progress: Callable[[], None] | None = None) -> dict[str, Any]:
@@ -345,9 +363,9 @@ def sync(backfill_days: int | None = None, progress: Callable[[], None] | None =
             api = client()
             today = date.today()
             with db.session() as c:
-                days = _days_needing_sync(c, today, backfill_days)
+                days, history_left = _days_needing_sync(c, today, backfill_days)
             intraday_from = (today - timedelta(days=INTRADAY_DAYS)).isoformat()
-            STATE.update(phase="days", total=len(days) + 3)
+            STATE.update(phase="days", total=len(days) + 5, history_left=history_left)
 
             for ds in days:
                 fetched = {
@@ -364,7 +382,9 @@ def sync(backfill_days: int | None = None, progress: Callable[[], None] | None =
                     for kind, data in fetched.items():
                         if data is not None or kind in ("garmin.summary", "garmin.sleep"):
                             db.put_raw(c, ds, kind, data)
-                    db.upsert(c, "daily", "day", extract_daily(c, ds))
+                    row = extract_daily(c, ds)
+                    if any(v is not None for k, v in row.items() if k not in ("day", "updated_at")):
+                        db.upsert(c, "daily", "day", row)
                 STATE["done"] += 1
                 flock.touch()
                 if progress:
@@ -373,17 +393,49 @@ def sync(backfill_days: int | None = None, progress: Callable[[], None] | None =
             # Activities
             STATE["phase"] = "activities"
             last = db.kv_get("garmin.activities_synced")
-            act_from = (
-                (date.fromisoformat(last) - timedelta(days=3)).isoformat()
-                if last
-                else (today - timedelta(days=max(backfill_days, 365))).isoformat()
-            )
-            acts = _call(api.get_activities_by_date, act_from, today.isoformat()) or []
+            # Full history on the first run; afterwards a 14-day window catches late uploads and edits.
+            full_done = db.kv_get("garmin.activities_full_history")
+            act_from = (date.fromisoformat(last) - timedelta(days=14)).isoformat() if last and full_done else HISTORY_START
+            acts = _call(api.get_activities_by_date, act_from, today.isoformat())
+            if acts is not None:
+                with db.session() as c:
+                    for a in acts:
+                        if a.get("activityId"):
+                            db.upsert(c, "garmin_activities", "id", activity_row(a))
+                db.kv_set("garmin.activities_synced", today.isoformat())
+                db.kv_set("garmin.activities_full_history", True)
+            acts = acts or []
+            STATE["done"] += 1
+
+            # Laps / splits for activities that don't have them yet (newest first)
+            STATE["phase"] = "laps"
             with db.session() as c:
-                for a in acts:
-                    if a.get("activityId"):
-                        db.upsert(c, "garmin_activities", "id", activity_row(a))
-            db.kv_set("garmin.activities_synced", today.isoformat())
+                todo = c.execute(
+                    "SELECT id, day FROM garmin_activities g WHERE NOT EXISTS "
+                    "(SELECT 1 FROM raw r WHERE r.kind = 'garmin.splits:' || g.id) ORDER BY start_local DESC LIMIT ?",
+                    (SPLITS_PER_RUN,),
+                ).fetchall()
+            for aid, aday in todo:
+                splits = _call(api.get_activity_splits, str(aid))
+                with db.session() as c:
+                    db.put_raw(c, aday, f"garmin.splits:{aid}", splits or {})
+                flock.touch()
+            STATE["done"] += 1
+
+            # Daily performance outlook (race predictions, endurance & hill score) - once per day
+            if db.kv_get("garmin.perf_day") != today.isoformat():
+                STATE["phase"] = "performance"
+                week_ago = (today - timedelta(days=7)).isoformat()
+                perf = {
+                    "garmin.race_predictions": _call(api.get_race_predictions),
+                    "garmin.endurance_score": _call(api.get_endurance_score, week_ago, today.isoformat()),
+                    "garmin.hill_score": _call(api.get_hill_score, week_ago, today.isoformat()),
+                }
+                with db.session() as c:
+                    for kind, data in perf.items():
+                        if data is not None:
+                            db.put_raw(c, today.isoformat(), kind, data)
+                db.kv_set("garmin.perf_day", today.isoformat())
             STATE["done"] += 1
 
             # Body composition / weight
@@ -412,7 +464,10 @@ def sync(backfill_days: int | None = None, progress: Callable[[], None] | None =
                 }
                 db.kv_set("garmin.profile", prof)
 
-        msg = f"{len(days)} days, {len(acts)} activities in {time.time() - started:.0f}s"
+        msg = f"{len(days)} days, {len(acts)} activities, {len(todo)} lap sets in {time.time() - started:.0f}s"
+        if history_left:
+            msg += f" - {history_left} older days still to backfill"
+        db.kv_set("garmin.history_left", history_left)
         db.kv_set("garmin.last_sync", db.now_iso())
         db.log("garmin", "ok", msg)
         return {"status": "ok", "message": msg}

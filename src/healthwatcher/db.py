@@ -88,6 +88,24 @@ CREATE TABLE IF NOT EXISTS checkins (
 
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT);
 
+-- Coach chat (embedded Claude Code sessions)
+CREATE TABLE IF NOT EXISTS chat_conversations (
+    id TEXT PRIMARY KEY,
+    sdk_session_id TEXT,
+    title TEXT,
+    created_at TEXT,
+    updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT,
+    role TEXT,          -- user | assistant | tool | error
+    content TEXT,       -- markdown text, or JSON for tool rows
+    context TEXT,       -- what the user was looking at (day, activity, ...)
+    created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_chat_conv ON chat_messages(conversation_id, id);
+
 CREATE TABLE IF NOT EXISTS sync_log (
     ts TEXT, source TEXT, status TEXT, message TEXT
 );

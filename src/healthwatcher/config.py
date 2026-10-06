@@ -27,7 +27,9 @@ GARMIN_TOKENS = os.path.expanduser(os.getenv("GARMINTOKENS", "~/.garminconnect")
 HOST = os.getenv("HW_HOST", "127.0.0.1")
 PORT = _int("HW_PORT", 8765)
 SYNC_INTERVAL_MIN = _int("HW_SYNC_INTERVAL_MIN", 20)
-BACKFILL_DAYS = _int("HW_BACKFILL_DAYS", 120)
+# How far back daily health data (sleep, HRV, ...) is ingested. Fetched newest-first in
+# batches, so the full window fills in over several syncs. Activities always go back fully.
+BACKFILL_DAYS = _int("HW_BACKFILL_DAYS", 1095)
 # Days for which minute-level HR / stress / body-battery curves are kept.
 INTRADAY_DAYS = _int("HW_INTRADAY_DAYS", 14)
 

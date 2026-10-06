@@ -38,6 +38,90 @@ def get_readiness(day: str | None = None) -> dict[str, Any]:
     return analytics.assessment(day)
 
 
+def _hourly(points: list, value_idx: int = 1) -> list[dict[str, Any]]:
+    """Condense minute-level [ts_ms, value, ...] samples into hourly min/avg/max (local time)."""
+    from datetime import datetime
+
+    buckets: dict[int, list[float]] = {}
+    for p in points or []:
+        if not isinstance(p, list) or len(p) <= value_idx or p[value_idx] is None or p[value_idx] < 0:
+            continue
+        hour = datetime.fromtimestamp(p[0] / 1000).hour
+        buckets.setdefault(hour, []).append(p[value_idx])
+    return [{"hour": h, "min": min(v), "avg": round(sum(v) / len(v)), "max": max(v)} for h, v in sorted(buckets.items())]
+
+
+@mcp.tool()
+def get_day(day: str) -> dict[str, Any]:
+    """Everything about one calendar day (YYYY-MM-DD): Garmin wellness row (sleep stages/score, HRV, RHR,
+    stress, body battery, readiness, training status), readiness verdict, all sessions with TSS and HR zones,
+    planned workouts, the athlete's check-in, and hourly heart-rate / stress / body-battery profiles."""
+    with db.session(readonly=True) as c:
+        hr = db.get_raw(c, day, "garmin.heart_rates") or {}
+        st = db.get_raw(c, day, "garmin.stress") or {}
+        sleep = db.get_raw(c, day, "garmin.sleep") or {}
+    sleep_dto = sleep.get("dailySleepDTO") or {}
+    return {
+        "day": day,
+        "daily": (db.rows("SELECT * FROM daily WHERE day=?", (day,)) or [None])[0],
+        "readiness": analytics.assessment(day),
+        "activities": [{k: v for k, v in a.items() if k != "raw"} for a in analytics.load_activities(day, day)],
+        "planned": db.rows("SELECT day, name, sport, duration_s, distance_m FROM planned WHERE day=?", (day,)),
+        "checkin": (db.rows("SELECT * FROM checkins WHERE day=?", (day,)) or [None])[0],
+        "sleep_detail": {
+            "score_feedback": sleep_dto.get("sleepScoreFeedback"),
+            "insight": sleep_dto.get("sleepScoreInsight"),
+            "scores": sleep_dto.get("sleepScores"),
+        } if sleep_dto else None,
+        "hourly_heart_rate": _hourly(hr.get("heartRateValues")),
+        "hourly_stress": _hourly(st.get("stressValuesArray")),
+        "hourly_body_battery": _hourly(st.get("bodyBatteryValuesArray"), 2),
+    }
+
+
+@mcp.tool()
+def get_activity_detail(activity_id: int) -> dict[str, Any]:
+    """One Garmin activity in depth: summary metrics, HR-zone times, training effect, the matching Strava
+    entry, and per-lap splits (distance, time, pace/speed, HR, power, cadence, elevation). Activity ids come
+    from get_activities / get_day (garmin_id)."""
+    import json as _json
+
+    from . import garmin_sync
+
+    rows = db.rows("SELECT * FROM garmin_activities WHERE id=?", (activity_id,))
+    if not rows:
+        return {"error": f"No Garmin activity {activity_id} in the local database."}
+    a = rows[0]
+    raw = _json.loads(a.pop("raw") or "{}")
+    with db.session(readonly=True) as c:
+        splits = db.get_raw(c, a["day"], f"garmin.splits:{activity_id}")
+    if not splits and garmin_sync.has_tokens():
+        try:
+            splits = garmin_sync.client().get_activity_splits(str(activity_id))
+            with db.session() as c:
+                db.put_raw(c, a["day"], f"garmin.splits:{activity_id}", splits or {})
+        except Exception as e:  # offline or not logged in - return what we have
+            splits = {"error": str(e)}
+    laps = []
+    for lap in (splits or {}).get("lapDTOs") or []:
+        laps.append({k: lap.get(k) for k in (
+            "lapIndex", "distance", "duration", "movingDuration", "averageSpeed", "averageHR", "maxHR",
+            "averagePower", "normalizedPower", "averageRunCadence", "averageBikeCadence", "elevationGain",
+            "intensityType", "averageSwolf", "numberOfActiveLengths") if lap.get(k) is not None})
+    extra = {k: raw.get(k) for k in (
+        "description", "trainingEffectLabel", "aerobicTrainingEffectMessage", "anaerobicTrainingEffectMessage",
+        "avgStrideLength", "avgVerticalOscillation", "avgGroundContactTime", "maxPower", "max20MinPower",
+        "trainingStressScore", "intensityFactor", "avgRespirationRate", "waterEstimated", "minTemperature",
+        "maxTemperature", "locationName", "lapCount", "poolLength") if raw.get(k) is not None}
+    th = analytics.thresholds()
+    tss, method = analytics.activity_tss(a, th)
+    return {
+        "activity": a, "tss": tss, "tss_method": method, "extra": extra, "laps": laps,
+        "strava": (db.rows("SELECT id, name, suffer_score, kudos, pr_count, achievement_count FROM strava_activities "
+                           "WHERE garmin_id=?", (activity_id,)) or [None])[0],
+    }
+
+
 @mcp.tool()
 def get_daily_metrics(days: int = 30, start: str | None = None, end: str | None = None) -> list[dict[str, Any]]:
     """Daily Garmin wellness rows (steps, kcal, RHR, stress, body battery, sleep stages/score, HRV, readiness,
@@ -103,7 +187,8 @@ def log_checkin(energy: int | None = None, soreness: int | None = None, mood: in
 def query_sql(sql: str) -> list[dict[str, Any]]:
     """Read-only SQL over the local SQLite DB. Tables: daily, garmin_activities, strava_activities, planned,
     checkins, raw(day, kind, json - full Garmin payloads, kinds garmin.summary/sleep/hrv/readiness/
-    training_status/heart_rates/stress/body_comp/calendar), view activities (unified). Max 500 rows."""
+    training_status/heart_rates/stress/body_comp/calendar/race_predictions/endurance_score/hill_score, and
+    "garmin.splits:<activity_id>" for laps), view activities (unified), chat_messages. Max 500 rows."""
     if not re.match(r"^\s*(select|with|pragma\s+table_info)\b", sql, re.I):
         raise ValueError("Only SELECT / WITH queries are allowed.")
     return db.rows(sql, readonly=True)[:500]

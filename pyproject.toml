@@ -8,6 +8,7 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "apscheduler>=3.11.3",
+    "claude-agent-sdk>=0.2.163",
     "fastapi>=0.142.2",
     "garminconnect>=0.3.17",
     "httpx>=0.28.1",

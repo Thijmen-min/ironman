@@ -8,10 +8,10 @@ from typing import Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import Body, FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import analytics, db, garmin_sync, strava
+from . import analytics, chat, db, garmin_sync, strava
 from .config import PROJECT_ROOT, STATIC_DIR, SYNC_INTERVAL_MIN
 
 log = logging.getLogger(__name__)
@@ -26,6 +26,10 @@ def run_sync() -> dict[str, Any]:
     s = strava.sync() if strava.connected() else {"status": "not_connected"}
     with db.session() as c:
         strava.match_garmin(c)
+    # While older history is still being backfilled, come back soon instead of in 20 minutes.
+    if g.get("status") == "ok" and (db.kv_get("garmin.history_left") or 0) > 0 and scheduler.running:
+        scheduler.add_job(sync_in_background, "date", run_date=datetime.now() + timedelta(minutes=2),
+                          id="backfill", replace_existing=True)
     return {"garmin": g, "strava": s}
 
 
@@ -47,8 +51,9 @@ def _startup() -> None:
 
 
 @app.on_event("shutdown")
-def _shutdown() -> None:
+async def _shutdown() -> None:
     scheduler.shutdown(wait=False)
+    await chat.shutdown()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -70,6 +75,7 @@ def status() -> dict[str, Any]:
         "garmin": {
             "has_tokens": garmin_sync.has_tokens(),
             "last_sync": db.kv_get("garmin.last_sync"),
+            "history_left": db.kv_get("garmin.history_left") or 0,
             "profile_name": (db.kv_get("garmin.profile") or {}).get("name"),
         },
         "strava": {
@@ -258,3 +264,53 @@ def save_checkin(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     with db.session() as c:
         db.upsert(c, "checkins", "day", row)
     return row
+
+
+# ---------------------------------------------------------------- coach chat
+
+
+@app.get("/api/chat/status")
+def chat_status() -> dict[str, Any]:
+    return {"cli": chat.claude_cli()}
+
+
+@app.get("/api/chat/conversations")
+def chat_conversations() -> list[dict[str, Any]]:
+    return chat.conversations()
+
+
+@app.get("/api/chat/conversations/{cid}")
+def chat_history(cid: str) -> list[dict[str, Any]]:
+    return chat.history(cid)
+
+
+@app.delete("/api/chat/conversations/{cid}")
+async def chat_delete(cid: str) -> dict[str, Any]:
+    await chat.delete(cid)
+    return {"status": "ok"}
+
+
+@app.post("/api/chat/send")
+async def chat_send(payload: dict[str, Any] = Body(...)) -> StreamingResponse:
+    message = (payload.get("message") or "").strip()
+    if not message:
+        raise HTTPException(400, "Empty message")
+
+    async def events():
+        async for ev in chat.send(payload.get("conversation_id"), message, payload.get("context")):
+            yield f"data: {json.dumps(ev, default=str)}\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
+@app.post("/api/chat/permission")
+def chat_permission(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    ok = chat.answer_permission(payload["conversation_id"], payload["id"], bool(payload.get("allow")))
+    return {"status": "ok" if ok else "expired"}
+
+
+@app.post("/api/chat/interrupt")
+async def chat_interrupt(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    await chat.interrupt(payload["conversation_id"])
+    return {"status": "ok"}

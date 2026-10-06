@@ -17,7 +17,17 @@ uv run hw shortcut                  # creates "HealthWatcher" on the desktop
 ```
 
 Open the **HealthWatcher** shortcut, go to **Settings** and connect Garmin (MFA supported). The first sync
-backfills 120 days, which takes a few minutes. After that the app re-syncs every 20 minutes while it is open.
+takes a few minutes. After that the app re-syncs every 20 minutes while it is open.
+
+### What gets stored (permanently, locally)
+
+Garmin Connect is the source of truth, and HealthWatcher keeps a complete local copy in `data/healthwatcher.db`.
+Nothing is ever deleted.
+- **Daily health** (sleep stages and score, HRV, resting HR, stress, body battery, SpO2, respiration, readiness, training status and load, VO2max): fetched newest-first, 60 older days per sync, back to `HW_BACKFILL_DAYS` (3 years by default), until the full history is in.
+- **Activities**: the complete history on the first sync, then a 14-day rolling window to catch late uploads and edits. Laps and splits are downloaded per activity.
+- **Late watch syncs**: today and yesterday are re-fetched every sync; the last 7 days are re-checked every 6 hours.
+- **Minute-level** heart rate, stress and body battery for the last 14 days of each sync (older curves stay once stored). Also stored: race predictions, endurance and hill score, the Garmin calendar, and weight.
+- The untouched Garmin responses are stored too (`raw` table), so nothing is lost if the parsing improves later.
 
 Optional:
 - **Sync while the app is closed:** `uv run hw install-task` (Windows Task Scheduler, every 30 min). Remove it with `uv run hw uninstall-task`.
@@ -35,7 +45,13 @@ Optional:
 
 ## Claude as coach
 
-`.mcp.json` registers two MCP servers for Claude Code in this folder:
+**In the app:** click **Coach chat** in the top bar, or **Discuss with Claude** on a day, workout, week or a point
+on the PMC chart. It runs a real Claude Code session (your installed `claude` CLI and its claude.ai login, so it
+uses your **subscription**, not API billing) with full access to the data below. Read-only tools run freely.
+Anything that writes to Garmin Connect, such as scheduling a workout, shows an Allow/Deny card first.
+Conversations are saved and can be resumed.
+
+**In the terminal:** `.mcp.json` registers two MCP servers for Claude Code in this folder:
 
 - `healthwatcher`: this database (briefing, readiness, daily metrics, activities, PMC, weekly summaries, check-ins, read-only SQL, sync)
 - `garmin`: live Garmin Connect via [Taxuspt/garmin_mcp](https://github.com/Taxuspt/garmin_mcp) (110+ tools, including uploading and scheduling workouts to your watch)

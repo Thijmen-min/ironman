@@ -9,7 +9,7 @@ the first time you coach, and record it there.
 
 | Tool | Use it for |
 |---|---|
-| MCP `healthwatcher` (this repo, local SQLite) | Everything historical: `get_coach_briefing` (start here), `get_readiness`, `get_daily_metrics`, `get_activities`, `get_training_load`, `get_weekly_summary`, `get_planned_workouts`, `get_checkins`, `log_checkin`, `query_sql`, `sync_now` |
+| MCP `healthwatcher` (this repo, local SQLite) | Everything historical: `get_coach_briefing` (start here), `get_day` (one day in depth), `get_activity_detail` (one workout incl. laps), `get_readiness`, `get_daily_metrics`, `get_activities`, `get_training_load`, `get_weekly_summary`, `get_planned_workouts`, `get_checkins`, `log_checkin`, `query_sql`, `sync_now` |
 | MCP `garmin` (Taxuspt/garmin_mcp, live Garmin Connect) | Fresh detail the DB doesn't hold (splits, laps, activity weather, power curves, race predictions) and **writing**: creating, uploading and scheduling structured workouts so they appear on the watch |
 | `claude.ai Strava` connector (if enabled) | Strava-specific detail: segments, streams, gear |
 | CLI fallback | `uv run hw brief`, `uv run hw sql "SELECT ..."`, `uv run hw sync` |
@@ -22,6 +22,7 @@ availability, injury history and preferences, and update it when the athlete tel
 
 ## Database cheat-sheet (`query_sql`, read-only)
 
+- Chat sessions inside the app send `[Context: ...]` lines naming what the athlete is looking at; resolve those with `get_day` / `get_activity_detail` first.
 - `daily(day, steps, rhr, avg_stress, bb_wake, bb_high, sleep_s, deep_s, rem_s, sleep_score, hrv_last_night, hrv_weekly, hrv_status, hrv_baseline_low/high, readiness, recovery_time_h, training_status, acute_load, chronic_load, acwr, vo2max, weight_kg, ...)`
 - `activities` view (Garmin ∪ Strava-only): `day, start_local, name, sport, duration_s, distance_m, avg_hr, max_hr, avg_power, norm_power, training_load (Garmin EPOC), aerobic_te, anaerobic_te, suffer_score, source`
 - `garmin_activities` adds `hr_z1_s..hr_z5_s`, `avg_cadence`, `raw` (full JSON); `strava_activities.garmin_id` links duplicates

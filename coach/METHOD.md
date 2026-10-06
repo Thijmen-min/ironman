@@ -100,6 +100,8 @@ Treat ACWR as a descriptive signal only; it doesn't predict injury on its own.
 
 ## Sources
 
+The full reading list is in `research/SOURCES.md`.
+
 - Silva Oliveira et al. 2024, polarized vs other TID meta-analysis: https://link.springer.com/article/10.1007/s40279-024-02034-z
 - 2025 TID findings (pyramidal then polarized; responder clusters): https://www.frontiersin.org/journals/physiology/articles/10.3389/fphys.2025.1657892/full , https://www.nature.com/articles/s41598-025-25369-7
 - HRV-guided training meta-analyses: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC8507742/ , https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7663087/
